@@ -85,6 +85,22 @@ Handles authentication and authorization: Multiple auth providers (Plex OAuth, O
 - Refresh: HTTP-only secure cookie only
 - SameSite=Strict (CSRF protection)
 
+## JWT Signing Secrets
+
+**Source:** `src/lib/utils/jwt.ts` — resolved lazily on first sign/verify (never at module load), memoized per process
+
+| Token | Env var (wins if set) | Fallback if unset |
+|-------|----------------------|-------------------|
+| Access | `JWT_SECRET` | HKDF-SHA256(`CONFIG_ENCRYPTION_KEY`, info `readmeabook:jwt:access:v1`) |
+| Refresh | `JWT_REFRESH_SECRET` | HKDF-SHA256(`CONFIG_ENCRYPTION_KEY`, info `readmeabook:jwt:refresh:v1`) |
+| Download | `JWT_DOWNLOAD_SECRET` | resolved access secret + `-download` |
+
+- **HKDF params:** salt `readmeabook:jwt-secret-derivation`, 32 bytes, base64-encoded
+- **No hardcoded fallback:** neither env var nor `CONFIG_ENCRYPTION_KEY` set → sign/verify throw
+- **Unified container:** entrypoint generates + persists `JWT_SECRET`/`JWT_REFRESH_SECRET` → derivation unused
+- **Derivation in use:** logged once at info level (names only, no secret material)
+- **Session impact:** changing HKDF params, or `CONFIG_ENCRYPTION_KEY` while derived, invalidates all sessions + download links
+
 ## Middleware
 
 **requireAuth()** - Verifies JWT exists/valid, adds user to request, returns 401 if invalid
@@ -269,6 +285,10 @@ oidc.admin_claim_value       = 'readmeabook-admin'
   - Prevents any Plex user from accessing the instance
   - machineIdentifier stored during setup/settings configuration (architectural optimization)
 - **OIDC PKCE**: All OIDC flows use PKCE (Proof Key for Code Exchange) for enhanced security
+
+## Fixed Issues
+
+- **#297 Hardcoded JWT fallback secrets:** `jwt.ts` fell back to built-in default strings when `JWT_SECRET`/`JWT_REFRESH_SECRET` were unset (installs that bypass the unified entrypoint). Fix: fallbacks removed; secrets derived from `CONFIG_ENCRYPTION_KEY` via HKDF. Affected installs: all sessions + download links invalidated on upgrade (re-login required).
 
 ## Tech Stack
 
