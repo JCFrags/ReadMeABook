@@ -20,6 +20,10 @@ const axiosMock = vi.hoisted(() => ({
   isAxiosError: (error: any) => Boolean(error?.isAxiosError),
 }));
 
+const addedHash = '0123456789abcdef0123456789abcdef01234567';
+const structuredAddSuccess = { success_count: 1, failure_count: 0, pending_count: 0, added_torrent_ids: [addedHash] };
+const structuredAddPending = { success_count: 0, failure_count: 0, pending_count: 1, added_torrent_ids: [] };
+
 const parseTorrentMock = vi.hoisted(() => vi.fn());
 const configServiceMock = vi.hoisted(() => ({
   getMany: vi.fn(),
@@ -67,20 +71,25 @@ describe('QBittorrentService', () => {
     invalidateQBittorrentService();
   });
 
-  it.each([['v4.6.0', 'paused'], ['v5.1.0', 'stopped']])('adds collection metadata stopped on %s', async (version, parameter) => {
+  it.each([
+    { version: 'v4.6.0', parameter: 'paused', data: 'Ok.' },
+    { version: 'v5.1.0', parameter: 'stopped', data: 'Ok.' },
+    { version: 'v5.2.3', parameter: 'stopped', data: structuredAddSuccess },
+  ])('adds collection metadata stopped on $version', async ({ version, parameter, data }) => {
     const service = new QBittorrentService('http://qb', '', '');
-    const hash = 'a'.repeat(40);
+    const hash = addedHash;
     parseTorrentMock.mockResolvedValue({ infoHash: hash });
-    vi.spyOn(service, 'findTorrent').mockResolvedValue(null);
+    const find = vi.spyOn(service, 'findTorrent').mockResolvedValue(null);
     vi.spyOn(service as any, 'ensureCategory').mockResolvedValue(undefined);
     clientMock.get.mockResolvedValue({ data: version });
-    clientMock.post.mockResolvedValue({ data: 'Ok.' });
+    clientMock.post.mockResolvedValue({ status: 200, data });
     expect(await service.addCollectionTorrent(Buffer.from('metadata'), hash, 'rmab-collection-11111111-1111-4111-8111-111111111111')).toEqual({ created: true });
     const [endpoint, form] = clientMock.post.mock.calls[0];
     expect(endpoint).toBe('/torrents/add');
     expect(form.getBuffer().toString()).toContain(`name="${parameter}"\r\n\r\ntrue`);
     expect(form.getBuffer().toString()).toContain('rmab-collection');
     expect(clientMock.post).toHaveBeenCalledTimes(1);
+    expect(find).toHaveBeenCalledTimes(1); // Acceptance needs no extra read; selection verifies stopped/files later.
   });
 
   it('maps download progress from torrent info', () => {
@@ -594,12 +603,15 @@ describe('QBittorrentService', () => {
     expect(clientMock.post).not.toHaveBeenCalled();
   });
 
-  it('adds magnet links when not already present', async () => {
+  it.each([
+    { format: 'legacy', data: 'Ok.' },
+    { format: 'structured', data: structuredAddSuccess },
+  ])('adds magnet links with a $format response', async ({ data }) => {
     const service = new QBittorrentService('http://qb', 'user', 'pass');
     (service as any).cookie = 'SID=add';
     vi.spyOn(service as any, 'ensureCategory').mockResolvedValue(undefined);
     vi.spyOn(service as any, 'getTorrent').mockRejectedValue(new Error('not found'));
-    clientMock.post.mockResolvedValue({ data: 'Ok.' });
+    clientMock.post.mockResolvedValue({ status: 200, data });
 
     const hash = await service.addTorrent(
       'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567',
@@ -614,6 +626,51 @@ describe('QBittorrentService', () => {
         headers: expect.objectContaining({ 'Content-Type': 'application/x-www-form-urlencoded' }),
       })
     );
+  });
+
+  it('reconciles a pending add by exact hash without submitting it again', async () => {
+    const service = new QBittorrentService('http://qb', '', '');
+    vi.spyOn(service as any, 'ensureCategory').mockResolvedValue(undefined);
+    clientMock.post.mockResolvedValue({ status: 202, data: structuredAddPending });
+    clientMock.get.mockResolvedValueOnce({ data: [] }) // Duplicate check.
+      .mockResolvedValueOnce({ data: [{ hash: 'b'.repeat(40) }] }) // Ignore an unrelated returned transfer.
+      .mockResolvedValueOnce({ data: [{ hash: addedHash.toUpperCase() }] });
+
+    await expect(service.addTorrent(`magnet:?xt=urn:btih:${addedHash}`)).resolves.toBe(addedHash);
+    expect(clientMock.post).toHaveBeenCalledTimes(1);
+    expect(clientMock.get).toHaveBeenCalledTimes(3);
+    expect(clientMock.get).toHaveBeenLastCalledWith('/torrents/info', expect.objectContaining({ params: { hashes: addedHash } }));
+  });
+
+  it.each(['absent', 'read error'])('rejects an inconclusive pending add (%s) without authentication or add retry', async (outcome) => {
+    const service = new QBittorrentService('http://qb', 'user', 'pass');
+    (service as any).cookie = 'SID=pending';
+    const login = vi.spyOn(service, 'login');
+    vi.spyOn(service as any, 'ensureCategory').mockResolvedValue(undefined);
+    clientMock.post.mockResolvedValue({ status: 202, data: structuredAddPending });
+    clientMock.get.mockResolvedValueOnce({ data: [] });
+    if (outcome === 'absent') clientMock.get.mockResolvedValue({ data: [] });
+    else clientMock.get.mockRejectedValue({ isAxiosError: true, response: { status: 403 } });
+
+    await expect(service.addTorrent(`magnet:?xt=urn:btih:${addedHash}`)).rejects.toThrow('Failed to add torrent');
+    expect(clientMock.post).toHaveBeenCalledTimes(1);
+    expect(clientMock.get).toHaveBeenCalledTimes(outcome === 'absent' ? 6 : 2);
+    expect(login).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'failure', status: 200, data: { ...structuredAddSuccess, failure_count: 1 } },
+    { name: 'mismatched identity', status: 200, data: { ...structuredAddSuccess, added_torrent_ids: ['b'.repeat(40)] } },
+    { name: 'malformed count', status: 200, data: { ...structuredAddSuccess, success_count: '1' } },
+    { name: 'inconsistent pending status', status: 200, data: structuredAddPending },
+  ])('rejects a $name single-add response', async ({ status, data }) => {
+    const service = new QBittorrentService('http://qb', '', '');
+    vi.spyOn(service, 'getTorrent').mockRejectedValue(new Error('not found'));
+    clientMock.post.mockResolvedValue({ status, data });
+
+    await expect((service as any).addMagnetLink(`magnet:?xt=urn:btih:${addedHash}`, 'readmeabook')).rejects.toThrow('qBittorrent rejected magnet link');
+    expect(clientMock.post).toHaveBeenCalledTimes(1);
+    expect(clientMock.get).not.toHaveBeenCalled();
   });
 
   it('throws when magnet link is invalid', async () => {
@@ -690,19 +747,22 @@ describe('QBittorrentService', () => {
     expect(parseTorrentMock).not.toHaveBeenCalled();
   });
 
-  it('adds torrent files after parsing successfully', async () => {
+  it.each([
+    { format: 'legacy', data: 'Ok.' },
+    { format: 'structured', data: structuredAddSuccess },
+  ])('adds torrent files with a $format response', async ({ data }) => {
     const service = new QBittorrentService('http://qb', 'user', 'pass');
     (service as any).cookie = 'SID=ok';
     vi.spyOn(service as any, 'ensureCategory').mockResolvedValue(undefined);
     vi.spyOn(service as any, 'getTorrent').mockRejectedValue(new Error('not found'));
 
     axiosMock.get.mockResolvedValueOnce({ data: Buffer.from('torrent') });
-    parseTorrentMock.mockResolvedValueOnce({ infoHash: 'hash-1', name: 'Book' });
-    clientMock.post.mockResolvedValue({ data: 'Ok.' });
+    parseTorrentMock.mockResolvedValueOnce({ infoHash: addedHash, name: 'Book' });
+    clientMock.post.mockResolvedValue({ status: 200, data });
 
     const hash = await service.addTorrent('http://example.com/file.torrent');
 
-    expect(hash).toBe('hash-1');
+    expect(hash).toBe(addedHash);
     expect(clientMock.post).toHaveBeenCalledWith(
       '/torrents/add',
       expect.any(Object),
@@ -1368,7 +1428,7 @@ describe('QBittorrentService', () => {
     it('omits Cookie header on requests when auth-optional', async () => {
       const service = new QBittorrentService('http://qb', '', '');
       vi.spyOn(service as any, 'getTorrent').mockRejectedValue(new Error('not found'));
-      clientMock.post.mockResolvedValue({ data: 'Ok.' });
+      clientMock.post.mockResolvedValue({ status: 200, data: 'Ok.' });
 
       await (service as any).addMagnetLink(
         'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567',
