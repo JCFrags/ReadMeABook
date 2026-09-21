@@ -4,25 +4,18 @@
 
 Free, open-source BitTorrent client with comprehensive Web API.
 
-## Enterprise Torrent Addition
+## Torrent addition
 
-**Challenge:** `/api/v2/torrents/add` returns only "Ok." without torrent hash.
+Extract the expected hash from the magnet or parse the downloaded `.torrent` before submitting one add. New collection adds use resolved metadata and remain stopped.
 
-**Solution (Professional):**
+- Older qBittorrent versions return HTTP 200 with plain `Ok.`. This response remains supported.
+- qBittorrent 5.2.3 / Web API 2.15.1 returns `success_count`, `failure_count`, `pending_count`, and `added_torrent_ids`. For one input, HTTP 200 must report one success, zero failures, zero pending adds, and exactly the expected hash as the returned ID.
+- HTTP 202 must report zero successes, zero failures, one pending add, and no IDs. Reconcile through at most five exact-hash reads, with 250 ms between reads. Request timeouts still apply. An unrelated transfer cannot confirm the add.
+- Failed, malformed, mismatched, or unconfirmed responses fail safely without another add in this operation. A readback error cannot enter the authentication/add retry path. Inspect the client before retrying an inconclusive pending add.
+- Add acceptance is not proof of metadata, file identity, or stopped state. Collection selection still verifies the operation marker, zero downloaded bytes, stopped state, and exact file priorities before starting.
+- Login has a separate response contract and is unchanged.
 
-**Magnet Links:**
-1. Extract `info_hash` from magnet URI (deterministic)
-2. Upload via `urls` parameter
-3. Return extracted hash immediately
-
-**Torrent Files:**
-1. Download .torrent file to memory
-2. Parse with `parse-torrent` (bencode decoder)
-3. Extract `info_hash` (SHA-1 of info dict)
-4. Upload file content via `torrents` parameter (multipart/form-data)
-5. Return extracted hash immediately
-
-**Benefits:** Deterministic, no race conditions, works with Docker networking, handles expired URLs
+Contract source: qBittorrent `release-5.2.3`, `src/webui/api/torrentscontroller.cpp`, `addAction()`.
 
 ## API Endpoints
 

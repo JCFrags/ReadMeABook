@@ -3,7 +3,7 @@
  * Documentation: documentation/phase3/qbittorrent.md
  */
 
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, AxiosResponse } from 'axios';
 import { RMAB_USER_AGENT } from '../utils/user-agent';
 import https from 'https';
 import path from 'path';
@@ -303,6 +303,46 @@ export class QBittorrentService implements IDownloadClient {
     }
   }
 
+  /** Validate one add without resubmitting it. API 2.15 reports counts and IDs. */
+  private async validateAddResponse(
+    response: Pick<AxiosResponse<unknown>, 'data' | 'status'>,
+    expectedHash: string,
+    source: 'magnet link' | '.torrent file' | 'collection metadata'
+  ): Promise<void> {
+    const { data, status } = response;
+    if (status === 200 && data === 'Ok.') return;
+    const rejected = () => new Error(`qBittorrent rejected ${source}: invalid or failed single-add response`);
+    if ((status !== 200 && status !== 202) || !data || typeof data !== 'object' || Array.isArray(data)) {
+      throw rejected();
+    }
+    const { success_count, failure_count, pending_count, added_torrent_ids } = data as Record<string, unknown>;
+    if (failure_count !== 0 || !Array.isArray(added_torrent_ids)) throw rejected();
+    if (status === 200 && success_count === 1 && pending_count === 0 && added_torrent_ids.length === 1) {
+      const id = added_torrent_ids[0];
+      if (typeof id !== 'string' || !/^[a-f0-9]{40}$/i.test(id) || id.toLowerCase() !== expectedHash.toLowerCase()) {
+        throw new Error(`qBittorrent rejected ${source}: added torrent identity does not match`);
+      }
+      // This confirms acceptance, not completed metadata or a safe collection selection.
+      return;
+    }
+    if (status !== 202 || success_count !== 0 || pending_count !== 1 || added_torrent_ids.length !== 0) {
+      throw rejected();
+    }
+
+    // A pending source has no returned ID. Confirm only the expected hash, never a recent/name match.
+    // Five reads with four 250 ms waits bound visibility reconciliation without another add.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        if (await this.findTorrent(expectedHash)) return;
+      } catch {
+        // Do not propagate an Axios 403 into addTorrent's authentication/add retry path.
+        throw new Error('qBittorrent pending add could not be confirmed. Inspect the client before retrying');
+      }
+      if (attempt < 4) await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    throw new Error('qBittorrent pending add remains unconfirmed. Inspect the client before retrying');
+  }
+
   /**
    * Add magnet link - hash is extractable from URI (deterministic)
    */
@@ -358,9 +398,7 @@ export class QBittorrentService implements IDownloadClient {
       },
     });
 
-    if (response.data !== 'Ok.') {
-      throw new Error(`qBittorrent rejected magnet link: ${response.data}`);
-    }
+    await this.validateAddResponse(response, infoHash, 'magnet link');
 
     logger.info(` Successfully added magnet link: ${infoHash}`);
     return infoHash;
@@ -374,7 +412,7 @@ export class QBittorrentService implements IDownloadClient {
     category: string,
     options?: AddTorrentOptions
   ): Promise<string> {
-    logger.info(` Downloading .torrent file from: ${torrentUrl}`);
+    logger.info('Downloading .torrent file');
 
     // Make initial request with maxRedirects: 0 to intercept redirects
     // Some Prowlarr indexers return HTTP URLs that redirect to magnet: links
@@ -416,7 +454,7 @@ export class QBittorrentService implements IDownloadClient {
       // Handle 3xx redirects
       if (status >= 300 && status < 400) {
         const location = error.response.headers['location'];
-        logger.info(` Got ${status} redirect to: ${location}`);
+        logger.info(`Got HTTP ${status} redirect`);
 
         // Check if redirect target is a magnet link
         if (location && location.startsWith('magnet:')) {
@@ -451,7 +489,7 @@ export class QBittorrentService implements IDownloadClient {
             throw new Error('Failed to download torrent file after redirect');
           }
         } else {
-          throw new Error(`Invalid redirect location: ${location}`);
+          throw new Error('Invalid redirect location');
         }
       } else {
         // Non-redirect error (4xx, 5xx)
@@ -529,9 +567,7 @@ export class QBittorrentService implements IDownloadClient {
       maxContentLength: Infinity,
     });
 
-    if (response.data !== 'Ok.') {
-      throw new Error(`qBittorrent rejected .torrent file: ${response.data}`);
-    }
+    await this.validateAddResponse(response, infoHash, '.torrent file');
 
     logger.info(` Successfully added torrent: ${infoHash}`);
     return infoHash;
@@ -816,7 +852,7 @@ export class QBittorrentService implements IDownloadClient {
     const response = await this.client.post('/torrents/add', form, {
       headers: { ...this.authHeaders(), ...form.getHeaders() },
     });
-    if (response.data !== 'Ok.') throw new Error('qBittorrent rejected collection metadata');
+    await this.validateAddResponse(response, expectedHash, 'collection metadata');
     return { created: true };
   }
 
