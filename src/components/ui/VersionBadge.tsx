@@ -7,12 +7,12 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 
-const GITHUB_REPO = 'kikootwo/ReadMeABook';
+const GITHUB_REPO = 'JCFrags/ReadMeABook';
 const REMOTE_PACKAGE_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/refs/heads/main/package.json`;
 const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
 
 function compareVersions(current: string, latest: string): number {
-  const parse = (v: string) => v.replace(/^v/, '').split('.').map(Number);
+  const parse = (v: string) => v.replace(/^v/, '').replace(/-jcfrags\./, '.').split('.').map(Number);
   const a = parse(current);
   const b = parse(latest);
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -91,9 +91,7 @@ export function VersionBadge() {
     return null;
   }
 
-  const releaseUrl = rawVersion && rawVersion !== 'unknown'
-    ? `https://github.com/${GITHUB_REPO}/releases/tag/v${rawVersion}`
-    : `https://github.com/${GITHUB_REPO}/releases`;
+  const sourceUrl = `https://github.com/${GITHUB_REPO}/tree/${commit || 'main'}`;
 
   const tooltipText = updateAvailable && latestVersion
     ? `${version}${commit ? ` (${commit})` : ''} — Update available: v${latestVersion}`
@@ -101,17 +99,14 @@ export function VersionBadge() {
 
   return (
     <a
-      href={updateAvailable && latestVersion
-        ? `https://github.com/${GITHUB_REPO}/releases/tag/v${latestVersion}`
-        : releaseUrl
-      }
+      href={sourceUrl}
       target="_blank"
       rel="noopener noreferrer"
       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-gradient-to-r from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-800 border border-gray-300 dark:border-gray-600 shadow-sm hover:shadow-md transition-shadow no-underline"
       title={tooltipText}
     >
       <span className="text-xs font-mono font-medium text-gray-700 dark:text-gray-300">
-        {version}
+        {version} · Fork source
       </span>
       {updateAvailable && latestVersion && (
         <span className="inline-flex items-center gap-1 text-xs font-mono font-medium text-amber-600 dark:text-amber-400">

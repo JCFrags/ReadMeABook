@@ -36,6 +36,11 @@ describe('processSearchIndexers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     configMock.getAudibleRegion.mockResolvedValue('us');
+    prismaMock.request.findUnique.mockImplementation(async ({ where }: any) => ({
+      id: where.id, status: 'awaiting_search', deletedAt: null, consecutiveNoMatch: 0, activeSearchJobId: null,
+      audiobook: { title: where.id.startsWith('req-filter') ? 'Good Release' : where.id === 'req-exhausted' ? 'Bad Release' : 'Book', author: 'Author' },
+    }));
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
     // Default to empty blocklist so the filter is a no-op unless a test overrides.
     prismaMock.blockedRelease.findMany.mockResolvedValue([]);
   });
@@ -48,7 +53,7 @@ describe('processSearchIndexers', () => {
       return null;
     });
     prowlarrMock.searchWithVariations.mockResolvedValue([]);
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
 
     const { processSearchIndexers } = await import('@/lib/processors/search-indexers.processor');
     const result = await processSearchIndexers({
@@ -58,7 +63,7 @@ describe('processSearchIndexers', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(prismaMock.request.update).toHaveBeenCalledWith(
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'awaiting_search' }),
       })
@@ -101,7 +106,7 @@ describe('processSearchIndexers', () => {
       },
     ]);
 
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
 
     const { processSearchIndexers } = await import('@/lib/processors/search-indexers.processor');
     const result = await processSearchIndexers({
@@ -121,7 +126,7 @@ describe('processSearchIndexers', () => {
       categories: [3030],
       indexerIds: [1],
       minSeeders: 1,
-    });
+    }, expect.any(Object));
   });
 
   it('ranks all candidates before limiting automatic search to 100 results', async () => {
@@ -145,7 +150,7 @@ describe('processSearchIndexers', () => {
       format: 'M4B',
     }));
     prowlarrMock.searchWithVariations.mockResolvedValue(candidates);
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
 
     const { processSearchIndexers } = await import('@/lib/processors/search-indexers.processor');
     const result = await processSearchIndexers({
@@ -167,7 +172,7 @@ describe('processSearchIndexers', () => {
 
   it('fails when no indexers are configured', async () => {
     configMock.get.mockResolvedValue(null);
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
 
     const { processSearchIndexers } = await import('@/lib/processors/search-indexers.processor');
     await expect(
@@ -178,7 +183,7 @@ describe('processSearchIndexers', () => {
       })
     ).rejects.toThrow('No indexers configured');
 
-    expect(prismaMock.request.update).toHaveBeenCalledWith(
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'failed' }),
       })
@@ -223,7 +228,7 @@ describe('processSearchIndexers', () => {
     prismaMock.blockedRelease.findMany.mockResolvedValue([
       { id: 'b1', releaseKey: 'bad release - author', releaseHash: null },
     ]);
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
 
     const { processSearchIndexers } = await import('@/lib/processors/search-indexers.processor');
     const result = await processSearchIndexers({
@@ -281,7 +286,7 @@ describe('processSearchIndexers', () => {
     prismaMock.blockedRelease.findMany.mockResolvedValue([
       { id: 'b2', releaseKey: 'unrelated key', releaseHash: 'abc123' },
     ]);
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
 
     const { processSearchIndexers } = await import('@/lib/processors/search-indexers.processor');
     const result = await processSearchIndexers({
@@ -337,7 +342,7 @@ describe('processSearchIndexers', () => {
       { id: 'b1', releaseKey: 'bad release one', releaseHash: null },
       { id: 'b2', releaseKey: 'bad release two', releaseHash: null },
     ]);
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
 
     const { processSearchIndexers } = await import('@/lib/processors/search-indexers.processor');
     const result = await processSearchIndexers({
@@ -348,7 +353,7 @@ describe('processSearchIndexers', () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toMatch(/No usable releases — 2 candidates tried, all blocked/);
-    expect(prismaMock.request.update).toHaveBeenCalledWith(
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           status: 'awaiting_search',
@@ -358,6 +363,37 @@ describe('processSearchIndexers', () => {
     );
     expect(jobQueueMock.addDownloadJob).not.toHaveBeenCalled();
   });
+  it('keeps provider failures out of the consecutive no-match count', async () => {
+    configMock.get.mockImplementation(async key => key === 'prowlarr_indexers' ? JSON.stringify([{ id: 1, name: 'Indexer' }]) : null);
+    const { SearchProviderError } = await import('@/lib/utils/search-policy');
+    prowlarrMock.searchWithVariations.mockRejectedValue(new SearchProviderError(120000, 429));
+    const { processSearchIndexers } = await import('@/lib/processors/search-indexers.processor');
+    await processSearchIndexers({ requestId: 'req-provider', audiobook: { id: 'a', title: 'Book', author: 'Author' }, jobId: 'job-provider' });
+    const outcome = prismaMock.request.updateMany.mock.calls.at(-1)?.[0].data;
+    expect(outcome.lastSearchOutcome).toBe('provider_error');
+    expect(outcome).not.toHaveProperty('consecutiveNoMatch');
+  });
+
+  it('uses custom terms only for discovery and preserves canonical volume', async () => {
+    configMock.get.mockImplementation(async key => key === 'prowlarr_indexers' ? JSON.stringify([{ id: 1, name: 'Indexer' }]) : null);
+    prismaMock.request.findUnique.mockResolvedValue({ status: 'awaiting_search', consecutiveNoMatch: 0, customSearchTerms: 'Example',
+      audiobook: { title: 'Example Book Volume 2', author: 'Author', seriesPart: '2' } });
+    prowlarrMock.searchWithVariations.mockResolvedValue([{ title: 'Example Book Volume 1 - Author', format: 'M4B', size: 50000000, seeders: 10 }]);
+    const { processSearchIndexers } = await import('@/lib/processors/search-indexers.processor');
+    await processSearchIndexers({ requestId: 'req-canonical', audiobook: { id: 'a', title: 'Example Book Volume 2', author: 'Author' }, jobId: 'job-canonical' });
+    expect(prowlarrMock.searchWithVariations).toHaveBeenCalledWith('Example Book Volume 2', 'Author', expect.any(Object), expect.objectContaining({ customSearchTerms: 'Example' }));
+    expect(jobQueueMock.addDownloadJob).not.toHaveBeenCalled();
+  });
+
+  it('does not reclaim a request already downloading a collection', async () => {
+    prismaMock.request.findUnique.mockResolvedValue({ status: 'downloading', audiobook: { title: 'Book', author: 'Author' } });
+    const { processSearchIndexers } = await import('@/lib/processors/search-indexers.processor');
+    const result = await processSearchIndexers({ requestId: 'req-collection', audiobook: { id: 'a', title: 'Book', author: 'Author' }, jobId: 'old-job' });
+    expect(result.skipped).toBe(true);
+    expect(prismaMock.request.updateMany).not.toHaveBeenCalled();
+    expect(prowlarrMock.searchWithVariations).not.toHaveBeenCalled();
+  });
+
 });
 
 

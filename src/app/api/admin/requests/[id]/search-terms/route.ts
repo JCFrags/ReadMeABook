@@ -7,6 +7,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, requireAdmin, AuthenticatedRequest } from '@/lib/middleware/auth';
 import { prisma } from '@/lib/db';
 import { RMABLogger } from '@/lib/utils/logger';
+import { resetSearchPolicy } from '@/lib/utils/search-policy';
+import { hasSelectedCollection } from '@/lib/utils/search-state';
 
 const logger = RMABLogger.create('API.Admin.SearchTerms');
 
@@ -72,6 +74,10 @@ export async function PATCH(
           );
         }
 
+        if (await hasSelectedCollection(id)) {
+          return NextResponse.json({ error: 'CollectionRecoveryRequired', message: 'Use collection selection or import recovery for this request.' }, { status: 409 });
+        }
+
         // Update custom search terms
         await prisma.request.update({
           where: { id },
@@ -79,6 +85,12 @@ export async function PATCH(
             customSearchTerms: normalizedTerms,
             updatedAt: new Date(),
           },
+        });
+
+        const searchableStatuses = ['pending', 'failed', 'awaiting_search', 'awaiting_release'];
+        await prisma.request.updateMany({
+          where: { id, deletedAt: null, status: { in: searchableStatuses } },
+          data: resetSearchPolicy(),
         });
 
         logger.info(`Custom search terms ${normalizedTerms ? 'set' : 'cleared'} for request ${id}`, {
@@ -89,16 +101,13 @@ export async function PATCH(
 
         // Optionally trigger a new search
         let searchTriggered = false;
-        if (triggerSearch && ['pending', 'failed', 'awaiting_search'].includes(existingRequest.status)) {
+        if (triggerSearch && searchableStatuses.includes(existingRequest.status)) {
           // Reset status to pending and clear error
-          await prisma.request.update({
-            where: { id },
-            data: {
-              status: 'pending',
-              errorMessage: null,
-              updatedAt: new Date(),
-            },
+          const reset = await prisma.request.updateMany({
+            where: { id, deletedAt: null, status: { in: searchableStatuses } },
+            data: { status: 'pending', errorMessage: null, ...resetSearchPolicy() },
           });
+          if (!reset.count) return NextResponse.json({ error: 'Conflict', message: 'Request state changed' }, { status: 409 });
 
           // Queue search job based on request type
           const { getJobQueueService } = await import('@/lib/services/job-queue.service');
@@ -111,9 +120,9 @@ export async function PATCH(
           };
 
           if (existingRequest.type === 'ebook') {
-            await jobQueue.addSearchEbookJob(id, audiobookData);
+            await jobQueue.addSearchEbookJob(id, audiobookData, undefined, { trigger: 'manual' });
           } else {
-            await jobQueue.addSearchJob(id, audiobookData);
+            await jobQueue.addSearchJob(id, audiobookData, { trigger: 'manual' });
           }
 
           searchTriggered = true;

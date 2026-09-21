@@ -41,14 +41,34 @@ Result: Douglas Adams/Stephen Fry/The Hitchhiker's Guide to the Galaxy/
 2. Identify audiobook files (.m4b, .m4a, .mp3, .mp4, .aa, .aax, .flac, .ogg) - supports both directories and single files
 3. Read media directory and path template from database config (`media_dir`, `audiobook_path_template`)
 4. Apply template to create target path: `[media_dir]/[template result]/`
-5. **Copy** files (not move - originals stay for seeding)
+5. **Copy** every intended audio file. Verify content before publication or reuse. Originals stay for seeding.
 6. **Tag metadata** (if enabled) - writes correct title, author, narrator, ASIN to audio files
 7. Copy cover art if found, else download from Audible
 8. **Coerce file formats** (if enabled) - rename .mp4 → .m4b and single-file .m4a → .m4b for Plex compatibility (see: Plex Format Coercion below)
 9. **Generate file hash** - SHA256 of sorted audio filenames for library matching (see: [fixes/file-hash-matching.md](../fixes/file-hash-matching.md))
 10. Update request status to `downloaded` and store file hash in `audiobooks.files_hash`
 11. **Trigger filesystem scan** (if enabled) - tells Plex/ABS to scan for new files
-12. Originals remain until seeding requirements met
+12. Preserve validated bundled EPUB/PDF when enabled, independently of ebook search settings. Originals and ambiguous files remain at source.
+
+## Import safety and format outcomes
+
+- Success requires all intended audio files. Missing selections, unreadable subdirectories, or partial copies cannot succeed with one remaining file.
+- Chapter merging requires every selected input to appear exactly once in chapter analysis. Otherwise, import files individually.
+- Copies use streams and SHA-256 comparison. A temporary file in the destination directory is published with an exclusive link, then its temporary name is removed. Source and library files have independent inodes.
+- Existing destinations are reused only when content matches. Different content raises `Import conflict` without overwrite. Resolve the conflict before retrying.
+- Import roots and descendant paths must contain real directories/files, not symbolic links. Template paths cannot escape the configured root.
+- Filesystem errors, missing files, and incomplete selected files remain retryable. Confirmed ebook-only audiobook downloads return `failureKind: wrong_format` immediately, not `awaiting_import`.
+- Wrong-format handling preserves source files and download history, adds an `organize_fail` release block, and conditionally changes `processing` to `awaiting_search` through `noMatchPolicy(previousCount, 'wrong_format')`. The normal persisted cooldown applies. No search job is queued immediately.
+- If the release block cannot be saved, the request becomes `failed` instead of allowing automatic re-grab. The error message gives the next action.
+- Stale organize jobs cannot revive a request in `awaiting_search`, `awaiting_release`, `downloaded`, `available`, `failed`, or `cancelled`.
+- Result fields: `intendedAudioCount`, `accountedAudioCount`, optional `failureKind`, and `bundledEbooks` with per-file validation, destinations, and warnings. These fields are separate from the filename-based library `filesHash`.
+
+### Selected collections
+
+- `collectionSelection` is the persisted per-request manifest from `DownloadHistory`. Paths are relative to the mapped qBittorrent `save_path`, including the torrent root prefix.
+- Import only listed paths. Check each file's exact size, regular-file type, and containment before processing. Do not walk the pack, infer another book, or replace the save root with `content_path`.
+- Scheduled retries forward the persisted manifest and stored root. The organizer also reloads the manifest for older/manual queue calls that omitted it. Compare manifest fields in canonical order, not raw JSON property order, because PostgreSQL JSONB can reorder keys.
+- Copy mapped audio into the request's normal target folder. Validate only explicitly selected companions. Never clean up a collection source or shared save root.
 
 ## Filesystem Scan Triggering
 
@@ -260,6 +280,9 @@ async function organize(
 - **Metadata tagging:** `metadata_tagging_enabled` (boolean, default: true)
 - **Chapter merging:** `chapter_merging_enabled` (boolean, default: false)
 - **Plex format coercion:** `plex_format_coercion_enabled` (boolean, default: true)
+- **Bundled ebook preservation:** `bundled_ebook_import_enabled` (default: false, environment fallback `BUNDLED_EBOOK_IMPORT_ENABLED`)
+- **Independent bundled ebook root:** `ebook_media_dir` (environment fallback `EBOOK_MEDIA_DIR`). Empty uses the successful audio folder as a companion fallback. Ebook-only downloads need an independent root for library copies.
+- **Bundled ebook layout:** `{ebook_media_dir}/{author}/{title}/{title}.epub` and `.pdf`. No additional search or ebook request is created by preservation. See [ebook validation](../integrations/ebook-sidecar.md#bundled-ebooks-no-additional-acquisition).
 - **Fallback:** `/media/audiobooks` if media_dir not configured
 - **Temp directory:** `/tmp/readmeabook` (or `TEMP_DIR` env var)
 
@@ -271,6 +294,8 @@ async function organize(
 **4. Single file downloads** - Now supports files directly in downloads folder (not just directories)
 **5. Hardcoded media path** - Now reads `media_dir` from database config instead of hardcoded `/media/audiobooks`
 **6. Invalid URL error for cached cover art** - Fixed by detecting local cached thumbnails (`/api/cache/thumbnails/*`) and copying from `/app/cache/thumbnails/` instead of attempting HTTP download
+**7. Partial audio success and conflicting destinations** - Require complete selected-file accounting and content comparison. Never treat an arbitrary existing file as imported audio.
+**8. Bundled ebook loss and format retry loops** - Preserve validated companions without extra acquisition. Block confirmed ebook-only releases and return the audio request to cooled search.
 
 ## Tech Stack
 

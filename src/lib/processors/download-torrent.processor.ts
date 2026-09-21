@@ -36,18 +36,31 @@ export async function processDownloadTorrent(payload: DownloadTorrentPayload): P
   });
 
   try {
-    // Update request status to downloading
-    const request = await prisma.request.update({
-      where: { id: requestId },
-      data: {
-        status: 'downloading',
-        progress: 0,
-        updatedAt: new Date(),
-      },
-      include: {
-        user: { select: { plexUsername: true } },
-      },
+    // A queued automatic job must not override a later collection claim or a terminal request.
+    const request = await prisma.request.findFirst({
+      where: { id: requestId, deletedAt: null },
+      include: { user: { select: { plexUsername: true } } },
     });
+    if (!request || !['pending', 'searching', 'awaiting_search', 'awaiting_release', 'downloading'].includes(request.status)) {
+      return { success: true, skipped: true, message: 'Request state no longer permits this download' };
+    }
+    const previousDownload = await prisma.downloadHistory.findFirst({
+      where: { requestId, selected: true }, orderBy: { createdAt: 'desc' },
+    });
+    if ((previousDownload as typeof previousDownload & { collectionSelection?: unknown })?.collectionSelection) {
+      return { success: true, skipped: true, message: 'Request has an explicit collection selection; use its collection recovery flow' };
+    }
+    const owner = (request as typeof request & { activeDownloadJobId?: string | null }).activeDownloadJobId;
+    if (!jobId || (owner && owner !== jobId) || (!owner && request.status === 'downloading' && previousDownload && previousDownload.downloadStatus !== 'failed')) {
+      return { success: true, skipped: true, message: 'Another job or monitor owns this download' };
+    }
+    const claimWhere = { id: requestId, status: request.status, deletedAt: null,
+      OR: [{ activeDownloadJobId: null }, { activeDownloadJobId: jobId }] };
+    const claimData = { status: 'downloading', progress: 0, activeDownloadJobId: jobId, activeSearchJobId: null };
+    const claim = await prisma.request.updateMany({ where: claimWhere, data: claimData });
+    if (claim.count !== 1) {
+      return { success: true, skipped: true, message: 'Request changed before the download claim' };
+    }
 
     const config = await getConfigService();
     const manager = getDownloadClientManager(config);
@@ -125,6 +138,7 @@ export async function processDownloadTorrent(payload: DownloadTorrentPayload): P
       // Create DownloadHistory record. Exclude magnet links from the indexer-page fallback.
       const indexerPageUrl = candidate.infoUrl || (candidate.guid?.startsWith('magnet:') ? null : candidate.guid);
 
+      await prisma.downloadHistory.updateMany({ where: { requestId, selected: true }, data: { selected: false } });
       const downloadHistory = await prisma.downloadHistory.create({
         data: {
           requestId,
@@ -173,6 +187,9 @@ export async function processDownloadTorrent(payload: DownloadTorrentPayload): P
         3 // Wait 3 seconds before first check
       );
 
+      const handoffWhere = { id: requestId, status: 'downloading', activeDownloadJobId: jobId, deletedAt: null };
+      const handoffData = { activeDownloadJobId: null };
+      await prisma.request.updateMany({ where: handoffWhere, data: handoffData });
       logger.info(`Started monitoring job for request ${requestId} (${client.clientType}, 3s initial delay)`);
 
       return {
@@ -205,14 +222,10 @@ export async function processDownloadTorrent(payload: DownloadTorrentPayload): P
       );
     } else {
       // Permanent error — mark request as failed immediately
-      await prisma.request.update({
-        where: { id: requestId },
-        data: {
-          status: 'failed',
-          errorMessage: error instanceof Error ? error.message : 'Failed to add download to client',
-          updatedAt: new Date(),
-        },
-      });
+      const failureWhere = { id: requestId, status: 'downloading', activeDownloadJobId: jobId, deletedAt: null };
+      const failureData = { status: 'failed', activeDownloadJobId: null,
+        errorMessage: error instanceof Error ? error.message : 'Failed to add download to client', updatedAt: new Date() };
+      if (jobId) await prisma.request.updateMany({ where: failureWhere, data: failureData });
     }
 
     throw error;

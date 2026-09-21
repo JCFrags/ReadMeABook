@@ -28,6 +28,7 @@ import { useReplaceWithTorrent } from '@/lib/hooks/useReportedIssues';
 import { Audiobook } from '@/lib/hooks/useAudiobooks';
 import { fetchWithAuth } from '@/lib/utils/api';
 import { normalizeReleaseKey } from '@/lib/utils/release-key';
+import { CollectionSelectionModal } from './CollectionSelectionModal';
 
 interface BlockedReleaseLookup {
   /** normalized release key → reason text */
@@ -132,6 +133,8 @@ export function InteractiveTorrentSearchModal({
 
   const [results, setResults] = useState<(RankedTorrent & { qualityScore?: number; source?: string; ebookFormat?: string })[]>([]);
   const [confirmTorrent, setConfirmTorrent] = useState<TorrentResult | null>(null);
+  const [collectionTorrent, setCollectionTorrent] = useState<TorrentResult | null>(null);
+  const [canSelectCollection, setCanSelectCollection] = useState(false);
   const [blockedLookup, setBlockedLookup] = useState<BlockedReleaseLookup>(EMPTY_BLOCKED_LOOKUP);
 
   // Per locked decision #3, interactive search is NOT filtered — it shows
@@ -183,12 +186,14 @@ export function InteractiveTorrentSearchModal({
     setSearchTitle(customSearchTerms || audiobook.title);
     setResults([]);
     setExpandedGuids(new Set());
+    setCollectionTorrent(null);
   }, [isOpen, audiobook.title, customSearchTerms]);
 
   // Reset blocklist lookup when modal closes; fetch when admin opens it.
   useEffect(() => {
     if (!canFetchBlocklist) {
       setBlockedLookup(EMPTY_BLOCKED_LOOKUP);
+      setCanSelectCollection(false);
       return;
     }
     let cancelled = false;
@@ -205,6 +210,7 @@ export function InteractiveTorrentSearchModal({
           entries: Array<{ releaseName: string; releaseHash: string | null; reason: string }>;
         } = await response.json();
         if (cancelled) return;
+        setCanSelectCollection(true); // The blocklist endpoint already requires administrator access.
         const byKey = new Map<string, string>();
         const byHash = new Map<string, string>();
         for (const entry of data.entries) {
@@ -234,7 +240,9 @@ export function InteractiveTorrentSearchModal({
     if (!isOpen) return;
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (confirmTorrent) {
+        if (collectionTorrent) {
+          setCollectionTorrent(null);
+        } else if (confirmTorrent) {
           setConfirmTorrent(null);
         } else {
           handleClose();
@@ -247,7 +255,7 @@ export function InteractiveTorrentSearchModal({
       document.removeEventListener('keydown', handleEsc);
       document.body.style.overflow = '';
     };
-  }, [isOpen, handleClose, confirmTorrent]);
+  }, [isOpen, handleClose, confirmTorrent, collectionTorrent]);
 
   const performSearch = async () => {
     setResults([]);
@@ -460,6 +468,8 @@ export function InteractiveTorrentSearchModal({
                       });
                     }}
                     onDownload={() => handleDownloadClick(result)}
+                    onCollection={canSelectCollection && requestId && !isEbookMode && !replaceIssueId && !onConfirm && result.protocol !== 'usenet'
+                      ? () => setCollectionTorrent(result) : undefined}
                   />
                 ))}
               </div>
@@ -481,6 +491,12 @@ export function InteractiveTorrentSearchModal({
               Refresh
             </button>
           </div>
+        )}
+
+        {collectionTorrent && requestId && (
+          <CollectionSelectionModal torrent={collectionTorrent} requestId={requestId}
+            onClose={() => setCollectionTorrent(null)}
+            onSuccess={() => { setCollectionTorrent(null); onSuccess?.(); onClose(); }} />
         )}
 
         {/* Inline Confirmation Overlay */}
@@ -602,6 +618,7 @@ interface ResultRowProps {
   blockedReason: string | null;
   onToggleExpand: () => void;
   onDownload: () => void;
+  onCollection?: () => void;
 }
 
 function ResultRow({
@@ -612,6 +629,7 @@ function ResultRow({
   blockedReason,
   onToggleExpand,
   onDownload,
+  onCollection,
 }: ResultRowProps) {
   const score = Math.round(result.score);
   const style = getScoreStyle(score);
@@ -772,6 +790,8 @@ function ResultRow({
       </div>
 
       {/* Action Button */}
+      {onCollection && <button type="button" onClick={onCollection} disabled={isDownloading}
+        className="text-xs text-blue-600 dark:text-blue-400 disabled:opacity-40">Collection</button>}
       <button
         onClick={onDownload}
         disabled={isDownloading}

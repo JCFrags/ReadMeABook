@@ -1,9 +1,9 @@
 # CLAUDE.md - Project Standards & Workflow
 
-**Critical:** This document defines AI-optimized documentation standards and development workflow. **NEVER PERFORM COMMITS ON THE REPOSITORY.**
+**Critical:** This document defines project documentation standards and development workflow for the JCFrags fork. Commit only approved, verified changes. Screen each outgoing diff and commit identity for private information. Use a focused branch and the repository's pull-request checks before merging to `main`.
 
 **ALWAYS DO:** When you feel work is complete, you MUST verify BOTH of the following pass before reporting the work as ready to test:
-1. `docker compose build readmeabook` — must succeed with no errors.
+1. Build `dockerfile.unified` from the changed source. Use `docker compose -f docker-compose.local.yml build readmeabook`, `podman build -f dockerfile.unified .`, or the equivalent GitHub build workflow. A production Compose file that only names an image does not build source.
 2. `npm run test` — the FULL test suite must pass (0 failures). Running a subset is not sufficient; the entire suite must be green.
 
 Only after BOTH succeed may you tell the user the work is ready to be tested.

@@ -13,6 +13,7 @@ import { RMABLogger } from '../utils/logger';
 import { getJobQueueService } from '../services/job-queue.service';
 import { getConfigService } from '../services/config.service';
 import { shouldSkipAutoSearch } from '../utils/release-date';
+import { dueSearchFilter } from '../utils/search-policy';
 
 export interface RetryMissingTorrentsPayload {
   jobId?: string;
@@ -42,6 +43,7 @@ export async function processRetryMissingTorrents(payload: RetryMissingTorrentsP
     const requests = await prisma.request.findMany({
       where: {
         deletedAt: null,
+        AND: [dueSearchFilter()],
         ...(skipUnreleasedSetting
           ? {
               OR: [
@@ -84,86 +86,36 @@ export async function processRetryMissingTorrents(payload: RetryMissingTorrentsP
       try {
         const gate = shouldSkipAutoSearch({ releaseDate: request.releaseDate }, skipUnreleasedSetting);
 
-        if (request.status === 'awaiting_search' && gate.skip) {
-          // Future release, setting ON → demote to awaiting_release
-          await prisma.request.update({
-            where: { id: request.id },
-            data: { status: 'awaiting_release' },
-          });
+        if (gate.skip) {
+          if (request.status === 'awaiting_search') {
+            const moved = await prisma.request.updateMany({
+              where: { id: request.id, status: 'awaiting_search', deletedAt: null },
+              data: { status: 'awaiting_release' },
+            });
+            transitioned += moved.count;
+          }
           skipped++;
-          transitioned++;
-          logger.info(`Transitioned request to awaiting_release (unreleased)`, {
-            gateSource: 'RetryMissingTorrents',
-            requestId: request.id,
-            audiobookTitle: request.audiobook.title,
-            releaseDate: request.releaseDate?.toISOString() ?? null,
-            from: 'awaiting_search',
-            to: 'awaiting_release',
-          });
-        } else if (request.status === 'awaiting_release' && !gate.skip) {
-          // Released (or setting OFF) → promote to awaiting_search and run search.
-          // Order: update status → queue job → log (race safety).
-          await prisma.request.update({
-            where: { id: request.id },
+          continue;
+        }
+        if (request.status === 'awaiting_release') {
+          const moved = await prisma.request.updateMany({
+            where: { id: request.id, status: 'awaiting_release', deletedAt: null },
             data: { status: 'awaiting_search' },
           });
-
-          if (request.type === 'ebook') {
-            await jobQueue.addSearchEbookJob(request.id, {
-              id: request.audiobook.id,
-              title: request.audiobook.title,
-              author: request.audiobook.author,
-              asin: request.audiobook.audibleAsin || undefined,
-            });
-          } else {
-            await jobQueue.addSearchJob(request.id, {
-              id: request.audiobook.id,
-              title: request.audiobook.title,
-              author: request.audiobook.author,
-              asin: request.audiobook.audibleAsin || undefined,
-            });
-          }
-          triggered++;
+          if (!moved.count) { skipped++; continue; }
           transitioned++;
-          logger.info(`Transitioned request to awaiting_search and queued search`, {
-            requestId: request.id,
-            audiobookTitle: request.audiobook.title,
-            releaseDate: request.releaseDate?.toISOString() ?? null,
-            from: 'awaiting_release',
-            to: 'awaiting_search',
-            triggeredBy: 'RetryMissingTorrents',
-          });
-        } else if (request.status === 'awaiting_release' && gate.skip) {
-          // Still unreleased — leave as-is.
-          skipped++;
-          logger.info(`Skipped awaiting_release request (still unreleased)`, {
-            gateSource: 'RetryMissingTorrents',
-            requestId: request.id,
-            audiobookTitle: request.audiobook.title,
-            releaseDate: request.releaseDate?.toISOString() ?? null,
-          });
-        } else {
-          // awaiting_search + !gate.skip → existing search path
-          if (request.type === 'ebook') {
-            await jobQueue.addSearchEbookJob(request.id, {
-              id: request.audiobook.id,
-              title: request.audiobook.title,
-              author: request.audiobook.author,
-              asin: request.audiobook.audibleAsin || undefined,
-            });
-            triggered++;
-            logger.info(`Triggered ebook search for request ${request.id}: ${request.audiobook.title}`);
-          } else {
-            await jobQueue.addSearchJob(request.id, {
-              id: request.audiobook.id,
-              title: request.audiobook.title,
-              author: request.audiobook.author,
-              asin: request.audiobook.audibleAsin || undefined,
-            });
-            triggered++;
-            logger.info(`Triggered audiobook search for request ${request.id}: ${request.audiobook.title}`);
-          }
         }
+        const audiobook = {
+          id: request.audiobook.id,
+          title: request.audiobook.title,
+          author: request.audiobook.author,
+          asin: request.audiobook.audibleAsin || undefined,
+        };
+        const queued = request.type === 'ebook'
+          ? await jobQueue.addSearchEbookJob(request.id, audiobook, undefined, { trigger: 'retry' })
+          : await jobQueue.addSearchJob(request.id, audiobook, { trigger: 'retry' });
+        if (queued) triggered++;
+        else skipped++;
       } catch (error) {
         logger.error(`Failed to process request ${request.id}: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }

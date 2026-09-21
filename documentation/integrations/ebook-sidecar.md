@@ -5,6 +5,36 @@
 ## Overview
 Ebooks are first-class citizens in RMAB, with their own request type, tracking, and UI representation. When an audiobook request completes, an ebook request is automatically created (if a source is enabled). Supports multiple sources: Anna's Archive (direct HTTP) and Indexer Search (via Prowlarr with ebook categories).
 
+## Bundled ebooks (no additional acquisition)
+
+Bundled preservation is separate from first-class ebook requests and their acquisition switches. It inspects files already present in the completed audiobook download. It does not enable Anna's Archive, indexer search, auto-grab, or Find Missing Ebooks.
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `bundled_ebook_import_enabled` | `false` | Copy validated bundled EPUB/PDF. Environment fallback: `BUNDLED_EBOOK_IMPORT_ENABLED`. |
+| `ebook_media_dir` | empty | Independent destination root. Environment fallback: `EBOOK_MEDIA_DIR`. Mount it before enabling. |
+
+- Independent layout: `{root}/{author}/{title}/{title}.epub` and `.pdf`, using existing sanitized metadata helpers. Keep both valid formats in one item folder.
+- Without an independent root, an enabled successful audio import can preserve companions in its audio folder. Ebook-only downloads retain their sources and warn that a root is needed.
+- Database configuration takes priority over environment values. These keys do not change the destination of separately acquired first-class ebook requests.
+- Make independent copies. Compare SHA-256 before reusing an existing destination. Different content is a visible conflict, not an overwrite or a successful reuse.
+- Preserve every source. The organize processor suppresses source/Usenet cleanup when bundled ebooks are present, including rejected or ambiguous artifacts. Existing seeding cleanup policy remains separate.
+- Library watchers can index the independent root. The audio library scan setting does not scan a separate ebook library automatically.
+- Validation results and warnings appear in job results/events. A warning does not fail a successful audio import or create an ebook request.
+- Bundled ebook copies never change the shared audiobook row's path, format, completion state, or availability linkage. Only the audio import fulfills the audio request.
+- Legacy first-class ebook requests still share the audiobook row's path/format state. Separate ebook templates can affect serving/deletion path resolution. Bundled preservation does not use or enable that acquisition pipeline. Keep its acquisition sources disabled when another application owns independent ebooks.
+
+### Bounded validation
+
+- Outcomes: `validated`, `unverified`, `rejected`. Only `validated` copies enter the watched library. Other artifacts remain at source with a manual-review warning.
+- EPUB: ZIP signature, mimetype, archive CRCs, container/OPF XML, title and author, explicit requested edition, nonempty reading order, and all spine resources. Inspect up to six opening spine documents for explicit sample/MEAP/early-access markers. Do not extract archive paths or execute scripts. Encrypted/scripted resources require manual validation.
+- EPUB bounds: 256 MiB archive, 512 MiB expanded, 10,000 entries, 32 MiB per entry, 2 MiB per text document. Oversize material is not silently approved.
+- PDF: signature and end marker. Use optional Poppler `pdfinfo` and `pdftotext` for page count, encryption, opening-page identity/edition, and final-page readability. Each command has a 15-second timeout and 1 MiB output bound. Missing tools, unreadable text, encryption, or inconclusive identity leave the PDF unverified.
+- Reject explicit wrong-title/author/edition EPUBs and obvious samples, MEAPs, or incomplete editions. Reject explicit `dc:language` conflicts against the configured Audible region language (`audible.region`, default `us`, mapped by `getLanguageForRegion`). Normalize common BCP 47 tags and ISO language aliases, including regional variants. This is a configured constraint, not an inferred per-book language. Keep ambiguous PDF identity unverified, because conversion metadata alone is not reliable.
+- Missing or inconclusive EPUB language does not cause rejection. Validation results state that language is not verified. PDF language is not verified by these bounded text checks. Matching metadata does not prove the language of the complete text.
+- These checks establish bounded structural/identity evidence, not whole-text completeness, a full EPUB standards audit, or browser rendering.
+- A confirmed EPUB/PDF-only download cannot fulfill an audiobook request. The processor preserves it, blocks that release for the request, and returns the audio request to cooled search without repeated import attempts. Unknown archives or unreadable inventories do not justify that permanent-format classification.
+
 ## Key Details
 
 ### First-Class Ebook Requests
@@ -231,6 +261,10 @@ Search: https://annas-archive.gl/search?q=Title+Author&ext=epub&lang=en
 - `src/lib/utils/ranking-algorithm.ts` (`rankEbookTorrents` function)
 - `src/lib/utils/indexer-grouping.ts` (supports `'ebook'` type)
 - `src/lib/utils/epub-fixer.ts` (Kindle EPUB compatibility fixes)
+- `src/lib/utils/bundled-ebooks.ts` (existing-download inventory and preservation)
+- `src/lib/utils/ebook-validation.ts` (bounded EPUB/PDF checks)
+- `src/lib/utils/import-safety.ts` (contained, verified, no-overwrite copies)
+- `src/lib/utils/import-format-failure.ts` (per-request block and cooled audio-search transition)
 
 **UI:**
 - `src/components/requests/RequestCard.tsx` (ebook badge)

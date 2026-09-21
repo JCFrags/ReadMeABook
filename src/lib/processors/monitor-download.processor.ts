@@ -12,6 +12,9 @@ import { getDownloadClientManager } from '../services/download-client-manager.se
 import { CLIENT_PROTOCOL_MAP, DownloadClientType } from '../interfaces/download-client.interface';
 import { isTransientConnectionError } from '../utils/connection-errors';
 import { addAutoBlock } from '../services/blocklist.service';
+import type { QBittorrentService } from '../integrations/qbittorrent.service';
+import { readCollectionSelection } from '../collections/validation';
+import { collectionProgress } from '../collections/progress';
 
 /**
  * Map a download client's error signal to a coarse, human-readable reason
@@ -64,6 +67,13 @@ export async function processMonitorDownload(payload: MonitorDownloadPayload): P
   const logger = RMABLogger.forJob(jobId, 'MonitorDownload');
 
   try {
+    const monitorRequest = await prisma.request.findFirst({ where: { id: requestId, deletedAt: null } });
+    const history = await prisma.downloadHistory.findFirst({
+      where: { requestId, selected: true }, orderBy: { createdAt: 'desc' },
+    });
+    if (!monitorRequest || monitorRequest.status !== 'downloading' || history?.id !== downloadHistoryId) {
+      return { success: true, skipped: true, message: 'Request or selected download changed; stale monitor ignored' };
+    }
     // Get the download client service via the manager
     const configService = getConfigService();
     const manager = getDownloadClientManager(configService);
@@ -84,9 +94,25 @@ export async function processMonitorDownload(payload: MonitorDownloadPayload): P
       throw new Error(`Download ${downloadClientId} not found in ${downloadClient}`);
     }
 
-    // Build progress object for request updates
-    const progressPercent = Math.round(info.progress * 100);
-    const progressState = info.status;
+    const stillSelected = await prisma.downloadHistory.findFirst({
+      where: { requestId, selected: true }, orderBy: { createdAt: 'desc' },
+    });
+    if (stillSelected?.id !== downloadHistoryId) return { success: true, skipped: true, message: 'Selected download changed during client polling' };
+    const collectionSelection = readCollectionSelection((history as typeof history & { collectionSelection?: unknown })?.collectionSelection);
+    let selectedProgress = info.progress;
+    let progressState = info.status;
+    if (collectionSelection) {
+      const activeRequest = await prisma.request.findFirst({ where: { id: requestId, deletedAt: null } });
+      if (!activeRequest || activeRequest.status !== 'downloading') {
+        return { success: true, skipped: true, message: 'Collection request is no longer downloading' };
+      }
+      if (client.clientType !== 'qbittorrent' || history?.requestId !== requestId) throw new Error('Collection download client or request changed');
+      const progress = await collectionProgress(client as QBittorrentService, downloadClientId, collectionSelection);
+      selectedProgress = progress.progress;
+      if (info.status !== 'failed') progressState = progress.complete ? 'completed' : info.status === 'seeding' || info.status === 'completed' ? 'downloading' : info.status;
+    }
+    // Collection progress is per book, never the aggregate progress of the full pack.
+    const progressPercent = Math.round(selectedProgress * 100);
 
     if (client.protocol === 'usenet') {
       logger.info(`${client.clientType} status: ${info.status}`, {
@@ -96,13 +122,11 @@ export async function processMonitorDownload(payload: MonitorDownloadPayload): P
     }
 
     // Update request progress
-    await prisma.request.update({
-      where: { id: requestId },
-      data: {
-        progress: progressPercent,
-        updatedAt: new Date(),
-      },
+    const progressUpdate = await prisma.request.updateMany({
+      where: { id: requestId, status: 'downloading', deletedAt: null, downloadHistory: { some: { id: downloadHistoryId, selected: true } } },
+      data: { progress: progressPercent, updatedAt: new Date() },
     });
+    if (progressUpdate.count !== 1) return { success: true, skipped: true, message: 'Request changed during client polling' };
 
     // Update download history
     await prisma.downloadHistory.update({
@@ -118,6 +142,7 @@ export async function processMonitorDownload(payload: MonitorDownloadPayload): P
 
       // Ensure we have a download path
       const downloadPath = info.downloadPath;
+      if (collectionSelection && !info.savePath) throw new Error('Collection save root is unavailable');
       if (!downloadPath) {
         throw new Error('Download path not available from download client');
       }
@@ -135,8 +160,9 @@ export async function processMonitorDownload(payload: MonitorDownloadPayload): P
           const waitCount = (prevPathWaitCount ?? 0) + 1;
           const MAX_PATH_WAIT = 30; // Give up after ~5 minutes
 
-          if (waitCount < MAX_PATH_WAIT) {
-            const delay = Math.min(10, waitCount * 2); // 2s, 4s, 6s... up to 10s
+          if (waitCount < MAX_PATH_WAIT || collectionSelection) {
+            // Never hand a collection's temporary path to an importer with save-root-relative files.
+            const delay = collectionSelection && waitCount >= MAX_PATH_WAIT ? 300 : Math.min(10, waitCount * 2);
             logger.info(`Download path still in temp location, waiting for relocation (${waitCount}/${MAX_PATH_WAIT})`, {
               downloadPath, savePath: info.savePath,
             });
@@ -167,7 +193,7 @@ export async function processMonitorDownload(payload: MonitorDownloadPayload): P
         : { enabled: false, remotePath: '', localPath: '' };
 
       // Apply remote-to-local path transformation if enabled
-      const organizePath = PathMapper.transform(downloadPath, pathMappingConfig);
+      const organizePath = PathMapper.transform(collectionSelection ? info.savePath! : downloadPath, pathMappingConfig);
 
       logger.info(`Download completed`, {
         downloadClient: client.clientType,
@@ -202,11 +228,23 @@ export async function processMonitorDownload(payload: MonitorDownloadPayload): P
 
       // Trigger organize files job with properly constructed path
       const jobQueue = getJobQueueService();
-      await jobQueue.addOrganizeJob(
-        requestId,
-        request.audiobook.id,
-        organizePath
-      );
+      if (collectionSelection) {
+        const claim = await prisma.request.updateMany({
+          where: { id: requestId, status: 'downloading', deletedAt: null, downloadHistory: { some: { id: downloadHistoryId, selected: true } } }, data: { status: 'processing' },
+        });
+        if (claim.count !== 1) return { success: true, skipped: true, message: 'Collection import is already claimed' };
+        try {
+          await jobQueue.addOrganizeJob(requestId, request.audiobook.id, organizePath, undefined, false, undefined, collectionSelection);
+        } catch {
+          await prisma.request.updateMany({
+            where: { id: requestId, status: 'processing' },
+            data: { status: 'awaiting_import', errorMessage: 'Collection import queue failed. Retry import with the saved file selection' },
+          });
+          return { success: false, completed: true, message: 'Collection import awaits a queue retry', requestId };
+        }
+      } else {
+        await jobQueue.addOrganizeJob(requestId, request.audiobook.id, organizePath);
+      }
 
       logger.info(`Triggered organize_files job for request ${requestId}`);
 
@@ -225,14 +263,11 @@ export async function processMonitorDownload(payload: MonitorDownloadPayload): P
       const clientErrorDetail = info.errorMessage ?? null;
 
       // Update request to failed
-      await prisma.request.update({
-        where: { id: requestId },
-        data: {
-          status: 'failed',
-          errorMessage,
-          updatedAt: new Date(),
-        },
+      const failure = await prisma.request.updateMany({
+        where: { id: requestId, status: 'downloading', deletedAt: null, downloadHistory: { some: { id: downloadHistoryId, selected: true } } },
+        data: { status: 'failed', errorMessage, updatedAt: new Date() },
       });
+      if (failure.count !== 1) return { success: true, skipped: true, message: 'Stale download failure ignored' };
 
       // Update download history
       await prisma.downloadHistory.update({
@@ -403,14 +438,11 @@ export async function processMonitorDownload(payload: MonitorDownloadPayload): P
     // PATH 3: Permanent error (or connection failures exhausted).
     // Mark request as failed immediately.
     const failureMessage = errorMessage || 'Monitor download failed';
-    await prisma.request.update({
-      where: { id: requestId },
-      data: {
-        status: 'failed',
-        errorMessage: failureMessage,
-        updatedAt: new Date(),
-      },
+    const failure = await prisma.request.updateMany({
+      where: { id: requestId, status: 'downloading', deletedAt: null, downloadHistory: { some: { id: downloadHistoryId, selected: true } } },
+      data: { status: 'failed', errorMessage: failureMessage, updatedAt: new Date() },
     });
+    if (failure.count !== 1) return { success: true, skipped: true, message: 'Stale monitor failure ignored' };
 
     // Send notification for request failure
     const request = await prisma.request.findUnique({

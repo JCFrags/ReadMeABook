@@ -47,6 +47,8 @@ const queueMock = vi.hoisted(() => ({
 const redisMock = vi.hoisted(() => ({
   setMaxListeners: vi.fn(),
   disconnect: vi.fn(),
+  set: vi.fn().mockResolvedValue('OK'),
+  eval: vi.fn().mockResolvedValue(1),
 }));
 
 const QueueConstructor = vi.hoisted(() =>
@@ -157,7 +159,15 @@ describe('JobQueueService', () => {
     prismaMock.job.findMany.mockReset();
     prismaMock.scheduledJob.update.mockReset();
     prismaMock.request.update.mockReset();
+    prismaMock.request.updateMany.mockReset();
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.downloadHistory.findFirst.mockReset();
+    prismaMock.downloadHistory.updateMany.mockReset();
     prismaMock.downloadHistory.update.mockReset();
+    prismaMock.job.findMany.mockResolvedValue([]);
+    prismaMock.request.findUnique.mockResolvedValue({ id: 'req-1', status: 'pending', type: 'audiobook' });
+    redisMock.set.mockResolvedValue('OK');
+    redisMock.eval.mockResolvedValue(1);
   });
 
   it('adds search jobs with priority and stores Bull job ID', async () => {
@@ -189,10 +199,9 @@ describe('JobQueueService', () => {
       expect.objectContaining({ jobId: 'job-1', requestId: 'req-1' }),
       expect.objectContaining({ priority: 10 })
     );
-    expect(prismaMock.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
-      data: { bullJobId: 'bull-1' },
-    });
+    expect(prismaMock.job.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ bullJobId: 'search-search_indexers-req-1' }),
+    }));
   });
 
   it('adds download jobs with expected priority', async () => {
@@ -467,9 +476,9 @@ describe('JobQueueService', () => {
     await handlers.completed({ id: 'bull-10' }, { ok: true });
     await handlers.stalled({ id: 'bull-10' });
 
-    expect(updateSpy).toHaveBeenCalledWith('bull-10', 'active');
-    expect(updateSpy).toHaveBeenCalledWith('bull-10', 'completed', { ok: true });
-    expect(updateSpy).toHaveBeenCalledWith('bull-10', 'stuck');
+    expect(updateSpy).toHaveBeenCalledWith('bull-10', 'active', undefined, undefined, undefined, undefined);
+    expect(updateSpy).toHaveBeenCalledWith('bull-10', 'completed', { ok: true }, undefined, undefined, undefined);
+    expect(updateSpy).toHaveBeenCalledWith('bull-10', 'stuck', undefined, undefined, undefined, undefined);
   });
 
   it('marks monitor download failures and updates request status', async () => {
@@ -480,6 +489,7 @@ describe('JobQueueService', () => {
     new JobQueueService();
 
     const handlers = Object.fromEntries(queueMock.on.mock.calls.map(([event, handler]) => [event, handler]));
+    prismaMock.downloadHistory.findFirst.mockResolvedValue({ id: 'hist-1', createdAt: new Date() });
     await handlers.failed(
       {
         id: 'bull-11',
@@ -490,15 +500,15 @@ describe('JobQueueService', () => {
       new Error('Monitor failed')
     );
 
-    expect(prismaMock.request.update).toHaveBeenCalledWith(
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'req-1' },
+        where: expect.objectContaining({ id: 'req-1', status: 'downloading', downloadHistory: expect.any(Object) }),
         data: expect.objectContaining({ status: 'failed' }),
       })
     );
-    expect(prismaMock.downloadHistory.update).toHaveBeenCalledWith(
+    expect(prismaMock.downloadHistory.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'hist-1' },
+        where: { id: 'hist-1', requestId: 'req-1', selected: true },
         data: expect.objectContaining({ downloadStatus: 'failed' }),
       })
     );
@@ -651,4 +661,36 @@ describe('JobQueueService', () => {
     expect(queueMock.close).toHaveBeenCalled();
     expect(redisMock.disconnect).toHaveBeenCalled();
   });
+  it('reuses a live search job but ignores an orphaned pending history row', async () => {
+    const { JobQueueService } = await import('@/lib/services/job-queue.service');
+    const service = new JobQueueService();
+    queueMock.getJob.mockResolvedValue({ data: { jobId: 'live-job' }, getState: vi.fn().mockResolvedValue('active') });
+    expect(await service.addSearchJob('req-1', { id: 'a', title: 'Book', author: 'Author' })).toBe('live-job');
+    expect(queueMock.add).not.toHaveBeenCalled();
+    queueMock.getJob.mockResolvedValue(null);
+    prismaMock.job.findMany.mockResolvedValue([{ id: 'orphan', bullJobId: 'gone' }]);
+    prismaMock.job.create.mockResolvedValue({ id: 'replacement' });
+    queueMock.add.mockResolvedValue({ id: 'replacement' });
+    expect(await service.addSearchJob('req-1', { id: 'a', title: 'Book', author: 'Author' })).toBe('replacement');
+    expect(queueMock.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores stale monitor failures and requires exact ownership for exhausted pre-history download failures', async () => {
+    const { JobQueueService } = await import('@/lib/services/job-queue.service');
+    new JobQueueService();
+    const handlers = Object.fromEntries(queueMock.on.mock.calls.map(([event, handler]) => [event, handler]));
+    prismaMock.downloadHistory.findFirst.mockResolvedValue({ id: 'new-collection', createdAt: new Date() });
+    await handlers.failed({ id: 'old-monitor', name: 'monitor_download', attemptsMade: 3,
+      data: { requestId: 'req-1', downloadHistoryId: 'old-history' } }, new Error('failed'));
+    expect(prismaMock.request.updateMany).not.toHaveBeenCalled();
+    const job = { id: 'old-download', name: 'download_torrent', attemptsMade: 1,
+      data: { requestId: 'req-1', jobId: 'db-old-download' } };
+    await handlers.failed(job, new Error('failed'));
+    expect(prismaMock.request.updateMany).not.toHaveBeenCalled();
+    await handlers.failed({ ...job, attemptsMade: 3 }, new Error('failed'));
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'req-1', status: 'downloading', deletedAt: null, activeDownloadJobId: 'db-old-download' },
+    }));
+  });
+
 });

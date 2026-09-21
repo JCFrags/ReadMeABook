@@ -397,12 +397,18 @@ echo "✅ Environment configured"
 # RUN PRISMA MIGRATIONS
 # ============================================================================
 if [ "$USE_EXTERNAL_POSTGRES" = "true" ]; then
-    echo "⚠️  Running schema sync against EXTERNAL database - prisma db push --accept-data-loss"
+    echo "Running schema sync against the external database without automatic data-loss approval."
     echo "   This runs on every container start. Ensure your external database is backed up."
 fi
-echo "🔄 Running Prisma migrations..."
+echo "Synchronizing the Prisma schema..."
 cd /app
-su - node -c "cd /app && DATABASE_URL='$DATABASE_URL' npx prisma db push --skip-generate --accept-data-loss" || echo "⚠️  Migrations may have failed, continuing..."
+if ! su - node -c "cd /app && DATABASE_URL='$DATABASE_URL' npx prisma db push --skip-generate"; then
+    echo "Schema sync failed. The application will not start. Review the schema and backup before retrying."
+    if [ "$USE_EXTERNAL_POSTGRES" = "false" ]; then
+        su - postgres -c "/usr/lib/postgresql/16/bin/pg_ctl -D $PGDATA stop -m fast" || true
+    fi
+    exit 1
+fi
 
 # Run data migrations (run-once SQL scripts tracked in _data_migrations table)
 echo "🔄 Running data migrations..."

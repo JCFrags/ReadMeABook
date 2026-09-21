@@ -9,7 +9,7 @@ import { createJobQueueMock } from '../helpers/job-queue';
 
 const prismaMock = createPrismaMock();
 const configMock = vi.hoisted(() => ({ get: vi.fn() }));
-const jobQueueMock = createJobQueueMock();
+const jobQueueMock = { ...createJobQueueMock(), observeRssReleases: vi.fn() };
 const prowlarrMock = vi.hoisted(() => ({ getAllRssFeeds: vi.fn() }));
 
 vi.mock('@/lib/db', () => ({
@@ -36,6 +36,8 @@ describe('processMonitorRssFeeds', () => {
   beforeEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+    jobQueueMock.observeRssReleases.mockImplementation(async results => results);
+    jobQueueMock.addSearchJob.mockResolvedValue('search-job');
     // Default to empty blocklist so the filter is a no-op unless a test overrides.
     prismaMock.blockedRelease.findMany.mockResolvedValue([]);
   });
@@ -53,7 +55,7 @@ describe('processMonitorRssFeeds', () => {
     });
 
     prowlarrMock.getAllRssFeeds.mockResolvedValue([
-      { title: 'Great Book - Author Name' },
+      { title: 'Great Book - Author Name', format: 'M4B', indexerId: 1, guid: 'release-1' },
     ]);
 
     prismaMock.request.findMany.mockResolvedValue([
@@ -72,7 +74,7 @@ describe('processMonitorRssFeeds', () => {
     expect(result.success).toBe(true);
     expect(jobQueueMock.addSearchJob).toHaveBeenCalledWith(
       'req-1',
-      expect.objectContaining({ title: 'Great Book', author: 'Author Name' })
+      expect.objectContaining({ title: 'Great Book', author: 'Author Name' }), { trigger: 'rss', evidenceKey: expect.any(String) }
     );
     expect(prismaMock.request.findMany).toHaveBeenCalledWith(expect.objectContaining({
       orderBy: { id: 'asc' },
@@ -89,7 +91,7 @@ describe('processMonitorRssFeeds', () => {
       return null;
     });
     prowlarrMock.getAllRssFeeds.mockResolvedValue([
-      { title: 'Target Story - Target Author' },
+      { title: 'Target Story - Target Author', format: 'M4B', indexerId: 1, guid: 'release-2' },
     ]);
 
     const firstPage = Array.from({ length: 100 }, (_, index) => ({
@@ -135,7 +137,7 @@ describe('processMonitorRssFeeds', () => {
     }));
     expect(jobQueueMock.addSearchJob).toHaveBeenCalledWith(
       'req-target',
-      expect.objectContaining({ title: 'Target Story', author: 'Target Author' })
+      expect.objectContaining({ title: 'Target Story', author: 'Target Author' }), { trigger: 'rss', evidenceKey: expect.any(String) }
     );
     vi.useRealTimers();
   });
@@ -152,7 +154,7 @@ describe('processMonitorRssFeeds', () => {
     });
 
     prowlarrMock.getAllRssFeeds.mockResolvedValue([
-      { title: 'Future Book - Author Name' },
+      { title: 'Future Book - Author Name', format: 'M4B', indexerId: 1, guid: 'release-3' },
     ]);
 
     prismaMock.request.findMany.mockResolvedValue([
@@ -185,7 +187,7 @@ describe('processMonitorRssFeeds', () => {
     });
 
     prowlarrMock.getAllRssFeeds.mockResolvedValue([
-      { title: 'Great Book - Author Name' },
+      { title: 'Great Book - Author Name', format: 'M4B', indexerId: 1, guid: 'release-1' },
     ]);
 
     prismaMock.request.findMany.mockResolvedValue([
@@ -223,7 +225,7 @@ describe('processMonitorRssFeeds', () => {
     });
 
     prowlarrMock.getAllRssFeeds.mockResolvedValue([
-      { title: 'Future Book - Author Name' },
+      { title: 'Future Book - Author Name', format: 'M4B', indexerId: 1, guid: 'release-3' },
     ]);
 
     prismaMock.request.findMany.mockResolvedValue([
@@ -242,7 +244,7 @@ describe('processMonitorRssFeeds', () => {
     expect(result.success).toBe(true);
     expect(jobQueueMock.addSearchJob).toHaveBeenCalledWith(
       'req-future-off',
-      expect.objectContaining({ title: 'Future Book', author: 'Author Name' })
+      expect.objectContaining({ title: 'Future Book', author: 'Author Name' }), { trigger: 'rss', evidenceKey: expect.any(String) }
     );
     expect(prismaMock.request.update).not.toHaveBeenCalled();
   });

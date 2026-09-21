@@ -80,6 +80,8 @@ export interface DownloadInfo {
   eta: number;
   /** Category/label assigned to this download */
   category: string;
+  /** Client tags, when supported. */
+  tags?: string[];
   /** Filesystem path where download is stored (available after completion) */
   downloadPath?: string;
   /** Configured save directory (torrent clients only, used for path readiness detection) */

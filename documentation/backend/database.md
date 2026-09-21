@@ -71,6 +71,9 @@ PostgreSQL database storing users, audiobooks, requests, downloads, configuratio
 - `progress` (0-100), `priority`, `error_message`
 - `search_attempts`, `download_attempts`, `import_attempts`, `max_import_retries` (default 5)
 - `last_search_at`, `last_import_at`, `created_at`, `updated_at`, `completed_at`
+- `next_search_at` (nullable timestamp), `consecutive_no_match` (int, default 0), `last_search_outcome` (nullable string: `no_results`, `all_rejected`, `wrong_format`, `provider_error`, `matched`). Confirmed misses wait 1, 3, 7, then 14 days. Provider errors preserve the counter.
+- `active_search_job_id`, `active_download_job_id` (nullable strings): internal job ownership claims. Conditional processor and failure writes cannot alter a newer owner or collection claim. These are not foreign keys to retained job history.
+- Index: `(status, next_search_at, last_search_at)` supports due selection before the retry cap. Fields are additive and use the normal `prisma db push` startup flow.
 - Unique: `(user_id, audiobook_id)`
 - Indexes: `user_id`, `audiobook_id`, `status`, `created_at DESC`
 
@@ -78,6 +81,7 @@ PostgreSQL database storing users, audiobooks, requests, downloads, configuratio
 - `id` (UUID PK), `request_id` (FK), `indexer_name`, `torrent_name`, `torrent_hash`
 - `torrent_size_bytes`, `magnet_link`, `torrent_url`, `seeders`, `leechers`
 - `quality_score`, `selected` (bool), `download_client`, `download_client_id`
+- `collection_selection` (nullable JSONB): versioned selected-file manifest `{version:1, infoHash, files:[{index,path,size,kind}], batchId}`. Paths are exact qBittorrent file names relative to `save_path`, including the torrent-root prefix. `download_path` for this manifest uses mapped `save_path`, not `content_path`.
 - `download_status` ('queued'|'downloading'|'completed'|'failed'|'stalled')
 - `download_error`, `started_at`, `completed_at`, `created_at`
 - Indexes: `request_id`, `selected`, `created_at DESC`

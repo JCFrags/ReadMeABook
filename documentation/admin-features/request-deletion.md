@@ -256,6 +256,16 @@ Queries Updated (deletedAt: null filters):
 - src/lib/processors/*.ts (all processors)
 ```
 
+## Collection sources
+
+- A non-null `DownloadHistory.collectionSelection` marks a shared collection source.
+- Request deletion skips torrent and source-file deletion for that manifest or any history row with the same torrent hash, including old or soft-deleted mappings.
+- Scheduled cleanup also retains the source and mapping after seeding requirements are met. Later volumes can reuse the same torrent.
+- Both paths preserve the `rmab-collection` client tag. Before deleting a torrent, they acquire the same PostgreSQL advisory transaction lock used by collection setup and recheck the persisted manifest. A busy lock prevents deletion.
+- Deleting a request still removes its separate organized library folder and soft-deletes the request. It does not remove the whole collection.
+- Collection source removal is a separate, explicit download-client operation. Check all mapped books and seeding requirements first.
+- A failed collection-protection lookup stops request deletion or skips scheduled cleanup rather than assuming that deletion is safe.
+
 ## Configuration
 
 **No new config required** - uses existing:

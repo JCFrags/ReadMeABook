@@ -9,6 +9,7 @@ import * as cheerio from 'cheerio';
 import fs from 'fs/promises';
 import path from 'path';
 import { RMABLogger } from '../utils/logger';
+import { asSearchProviderError } from '../utils/search-policy';
 
 // Module-level logger (renamed to avoid shadowing function parameter 'logger')
 const moduleLogger = RMABLogger.create('EbookScraper');
@@ -314,11 +315,12 @@ export async function searchByAsin(
   baseUrl: string,
   logger?: RMABLogger,
   flaresolverrUrl?: string,
-  languageCode: string = 'en'
+  languageCode: string = 'en',
+  throwOnError: boolean = false
 ): Promise<string | null> {
-  // Check cache first
-  const cacheKey = `${asin}-${format}-${languageCode}`;
-  if (md5Cache.has(cacheKey)) {
+  // Strict search must not reuse negative results cached by legacy error handling.
+  const cacheKey = `${asin}-${format}-${languageCode}${throwOnError ? '-strict' : ''}`;
+  if (md5Cache.has(cacheKey) && (!throwOnError || md5Cache.get(cacheKey))) {
     const cached = md5Cache.get(cacheKey);
     if (cached) {
       await logger?.info(`Using cached MD5 for ASIN ${asin}`);
@@ -388,6 +390,7 @@ export async function searchByAsin(
     await delay(REQUEST_DELAY_MS);
     return md5;
   } catch (error) {
+    if (throwOnError) throw asSearchProviderError(error);
     await logger?.error(
       `Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`
     );
@@ -407,11 +410,11 @@ export async function searchByTitle(
   baseUrl: string,
   logger?: RMABLogger,
   flaresolverrUrl?: string,
-  languageCode: string = 'en'
+  languageCode: string = 'en',
+  throwOnError: boolean = false
 ): Promise<string | null> {
-  // Check cache first
-  const cacheKey = `title-${title}-${author}-${format}-${languageCode}`.toLowerCase();
-  if (md5Cache.has(cacheKey)) {
+  const cacheKey = `title-${title}-${author}-${format}-${languageCode}${throwOnError ? '-strict' : ''}`.toLowerCase();
+  if (md5Cache.has(cacheKey) && (!throwOnError || md5Cache.get(cacheKey))) {
     const cached = md5Cache.get(cacheKey);
     if (cached) {
       await logger?.info(`Using cached MD5 for title search`);
@@ -482,6 +485,7 @@ export async function searchByTitle(
     await delay(REQUEST_DELAY_MS);
     return md5;
   } catch (error) {
+    if (throwOnError) throw asSearchProviderError(error);
     await logger?.error(
       `Title search failed: ${error instanceof Error ? error.message : 'Unknown error'}`
     );
@@ -498,7 +502,8 @@ export async function getSlowDownloadLinks(
   md5: string,
   baseUrl: string,
   logger?: RMABLogger,
-  flaresolverrUrl?: string
+  flaresolverrUrl?: string,
+  throwOnError: boolean = false
 ): Promise<string[]> {
   try {
     const md5Url = `${baseUrl}/md5/${md5}`;
@@ -560,6 +565,7 @@ export async function getSlowDownloadLinks(
     await delay(REQUEST_DELAY_MS);
     return slowLinks;
   } catch (error) {
+    if (throwOnError) throw asSearchProviderError(error);
     await logger?.error(
       `Failed to get slow links: ${error instanceof Error ? error.message : 'Unknown error'}`
     );

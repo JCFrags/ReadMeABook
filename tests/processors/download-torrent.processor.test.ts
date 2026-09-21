@@ -61,6 +61,9 @@ describe('processDownloadTorrent', () => {
     // Restore default implementations cleared by clearAllMocks
     configMock.getMany.mockResolvedValue({ prowlarr_api_key: null });
     jobQueueMock.addNotificationJob.mockResolvedValue(undefined);
+    prismaMock.request.findFirst.mockResolvedValue({ id: 'req-1', status: 'searching', updatedAt: new Date(), type: 'audiobook', user: { plexUsername: 'testuser' } });
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.downloadHistory.findFirst.mockResolvedValue(null);
   });
 
   const torrentPayload = {
@@ -98,6 +101,20 @@ describe('processDownloadTorrent', () => {
     },
     jobId: 'job-2',
   };
+
+  it('does not run a queued whole-release download after a collection claim', async () => {
+    prismaMock.downloadHistory.findFirst.mockResolvedValue({ collectionSelection: { version: 1 } });
+    const { processDownloadTorrent } = await import('@/lib/processors/download-torrent.processor');
+    expect((await processDownloadTorrent(torrentPayload)).skipped).toBe(true);
+    expect(downloadClientManagerMock.getClientServiceForProtocol).not.toHaveBeenCalled();
+  });
+
+  it('does not download when the atomic request claim loses a race', async () => {
+    prismaMock.request.updateMany.mockResolvedValue({ count: 0 });
+    const { processDownloadTorrent } = await import('@/lib/processors/download-torrent.processor');
+    expect((await processDownloadTorrent(torrentPayload)).skipped).toBe(true);
+    expect(downloadClientManagerMock.getClientServiceForProtocol).not.toHaveBeenCalled();
+  });
 
   it('routes torrent downloads to qBittorrent', async () => {
     const qbtClientMock = {

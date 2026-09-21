@@ -768,6 +768,85 @@ export class QBittorrentService implements IDownloadClient {
     }
   }
 
+  /** Find an exact hash without confusing network/authentication errors with absence. */
+  async findTorrent(hash: string): Promise<TorrentInfo | null> {
+    if (!/^[a-f0-9]{40}$/i.test(hash)) throw new Error('Invalid torrent hash');
+    if (!this.cookie && !this.authOptional) await this.login();
+    const response = await this.client.get('/torrents/info', {
+      headers: this.authHeaders(), params: { hashes: hash },
+    });
+    if (!Array.isArray(response.data)) throw new Error('Invalid qBittorrent torrent response');
+    return response.data.find((t: TorrentInfo) => t.hash?.toLowerCase() === hash.toLowerCase()) || null;
+  }
+
+  /** Collections require a known qBittorrent version, not a best-effort compatible proxy. */
+  private async collectionApiVersion(): Promise<number> {
+    if (!this.cookie && !this.authOptional) await this.login();
+    const response = await this.client.get('/app/version', { headers: this.authHeaders() });
+    const match = String(response.data).match(/^v?(4|5)\.(\d+)\./);
+    if (!match || (match[1] === '4' && Number(match[2]) < 4)) {
+      throw new Error('Collection selection requires qBittorrent 4.4 or newer (4.x or 5.x)');
+    }
+    return Number(match[1]);
+  }
+
+  /**
+   * Upload known metadata stopped. This method NEVER resumes or adds a magnet.
+   * Documentation: documentation/features/collection-workflow.md
+   */
+  async addCollectionTorrent(buffer: Buffer, expectedHash: string, marker: string): Promise<{ created: boolean }> {
+    const parsed = await parseTorrent(buffer);
+    if (!/^[a-f0-9]{40}$/i.test(expectedHash) || parsed.infoHash !== expectedHash.toLowerCase()) {
+      throw new Error('Collection torrent identity changed');
+    }
+    if (await this.findTorrent(expectedHash)) return { created: false };
+    const major = await this.collectionApiVersion();
+    await this.ensureCategory(this.defaultCategory);
+    const form = new FormData();
+    form.append('torrents', buffer, { filename: 'collection.torrent', contentType: 'application/x-bittorrent' });
+    form.append(major >= 5 ? 'stopped' : 'paused', 'true');
+    form.append('category', this.defaultCategory);
+    if (!/^rmab-collection-[a-f0-9-]{36}$/.test(marker)) throw new Error('Invalid collection operation marker');
+    form.append('tags', `audiobook,rmab-collection,${marker}`);
+    form.append('contentLayout', 'Original');
+    form.append('savepath', PathMapper.reverseTransform(this.defaultSavePath, this.pathMappingConfig));
+    form.append('autoTMM', 'false');
+    form.append('ratioLimit', '-1');
+    form.append('seedingTimeLimit', '-1');
+    const response = await this.client.post('/torrents/add', form, {
+      headers: { ...this.authHeaders(), ...form.getHeaders() },
+    });
+    if (response.data !== 'Ok.') throw new Error('qBittorrent rejected collection metadata');
+    return { created: true };
+  }
+
+  async stopCollectionTorrent(hash: string): Promise<void> {
+    const major = await this.collectionApiVersion();
+    await this.client.post(major >= 5 ? '/torrents/stop' : '/torrents/pause', new URLSearchParams({ hashes: hash }), {
+      headers: { ...this.authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+  }
+
+  async startCollectionTorrent(hash: string): Promise<void> {
+    const major = await this.collectionApiVersion();
+    await this.client.post(major >= 5 ? '/torrents/start' : '/torrents/resume', new URLSearchParams({ hashes: hash }), {
+      headers: { ...this.authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+  }
+
+  async setFilePriority(hash: string, indexes: number[], priority: 0 | 1): Promise<void> {
+    if (!/^[a-f0-9]{40}$/i.test(hash) || !indexes.length || indexes.some(i => !Number.isSafeInteger(i) || i < 0)) {
+      throw new Error('Invalid collection file priority selection');
+    }
+    if (!this.cookie && !this.authOptional) await this.login();
+    // Keep form bodies bounded for large metadata lists.
+    for (let offset = 0; offset < indexes.length; offset += 500) {
+      await this.client.post('/torrents/filePrio', new URLSearchParams({
+        hash, id: indexes.slice(offset, offset + 500).join('|'), priority: String(priority),
+      }), { headers: { ...this.authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' } });
+    }
+  }
+
   /**
    * Get files in torrent
    */
@@ -1193,6 +1272,7 @@ export class QBittorrentService implements IDownloadClient {
       downloadSpeed: torrent.dlspeed,
       eta: torrent.eta,
       category: torrent.category,
+      tags: (torrent.tags || '').split(',').map(tag => tag.trim()).filter(Boolean),
       downloadPath,
       savePath: torrent.save_path,
       completedAt: torrent.completion_on > 0 ? new Date(torrent.completion_on * 1000) : undefined,

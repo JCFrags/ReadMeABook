@@ -12,6 +12,9 @@ import { RMABLogger } from '../utils/logger';
 import { getLanguageForRegion } from '../constants/language-config';
 import { filterBlockedResults } from '../utils/filter-blocked-results';
 import type { AudibleRegion } from '../types/audible';
+import { assessAudioIdentity } from '../utils/audio-identity';
+import { noMatchPolicy, providerFailurePolicy, resetSearchPolicy, asSearchProviderError, SearchProviderError } from '../utils/search-policy';
+import { claimSearchRequest, finishSearchRequest } from '../utils/search-state';
 
 const MAX_RANKED_RESULTS = 100;
 
@@ -26,23 +29,12 @@ export async function processSearchIndexers(payload: SearchIndexersPayload): Pro
 
   logger.info(`Processing request ${requestId} for "${audiobook.title}"`);
 
+  let reservedDownload = false;
   try {
-    // Update request status to searching
-    await prisma.request.update({
-      where: { id: requestId },
-      data: {
-        status: 'searching',
-        searchAttempts: { increment: 1 },
-        updatedAt: new Date(),
-      },
-    });
-
-    // Check for custom search terms override
-    const requestRecord = await prisma.request.findUnique({
-      where: { id: requestId },
-      select: { customSearchTerms: true },
-    });
-    const effectiveSearchTitle = requestRecord?.customSearchTerms || audiobook.title;
+    const requestRecord = await claimSearchRequest(requestId, payload.searchTrigger, jobId);
+    if (!requestRecord) return { success: false, skipped: true, message: 'Request is no longer eligible for search', requestId };
+    const canonical = requestRecord.audiobook;
+    const effectiveSearchTitle = requestRecord.customSearchTerms || canonical.title;
 
     // Get enabled indexers from configuration
     const { getConfigService } = await import('../services/config.service');
@@ -71,6 +63,7 @@ export async function processSearchIndexers(payload: SearchIndexersPayload): Pro
     // Group indexers by their category configuration
     // This minimizes API calls while ensuring each indexer only searches its configured categories
     const { groups, skippedIndexers } = groupIndexersByCategories(indexersConfig);
+    if (groups.length === 0) throw new Error('No audiobook categories configured.');
 
     if (skippedIndexers.length > 0) {
       const skippedNames = skippedIndexers.map(idx => idx.name).join(', ');
@@ -95,23 +88,26 @@ export async function processSearchIndexers(payload: SearchIndexersPayload): Pro
 
     // Search Prowlarr for each group and combine results
     const allResults = [];
+    let providerFailure: SearchProviderError | undefined;
 
     for (let i = 0; i < groups.length; i++) {
       const group = groups[i];
       logger.info(`Searching group ${i + 1}/${groups.length}: ${getGroupDescription(group)}`);
 
       try {
-        const groupResults = await prowlarr.searchWithVariations(effectiveSearchTitle, audiobook.author, {
+        const groupResults = await prowlarr.searchWithVariations(canonical.title, canonical.author, {
           categories: group.categories,
           indexerIds: group.indexerIds,
           minSeeders: 1, // Only torrents with at least 1 seeder
-        });
+        }, { customSearchTerms: requestRecord.customSearchTerms, series: canonical.series, seriesPart: canonical.seriesPart });
 
         logger.info(`Group ${i + 1} returned ${groupResults.length} results`);
         allResults.push(...groupResults);
       } catch (error) {
-        logger.error(`Group ${i + 1} search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        // Continue with other groups even if one fails
+        const failure = asSearchProviderError(error);
+        if (!providerFailure || failure.retryDelayMs > providerFailure.retryDelayMs) providerFailure = failure;
+        logger.warn(`Group ${i + 1} search failed: ${failure.message}`);
+        if (failure.status === 429) break;
       }
     }
 
@@ -127,21 +123,17 @@ export async function processSearchIndexers(payload: SearchIndexersPayload): Pro
       // removed everything it returned. Surface a blocklist-specific message in
       // the latter case so admins know to unblock (or accept it as terminal).
       const allBlocked = blockedCount > 0 && preBlocklistCount > 0;
-      const errorMessage = allBlocked
+      const errorMessage = providerFailure ? `${providerFailure.message}. Will retry automatically.` : allBlocked
         ? `No usable releases — ${preBlocklistCount} candidates tried, all blocked`
         : 'No torrents/nzbs found. Will retry automatically.';
 
       logger.warn(`${errorMessage} for request ${requestId}, marking as awaiting_search`);
 
-      await prisma.request.update({
-        where: { id: requestId },
-        data: {
-          status: 'awaiting_search',
-          errorMessage,
-          lastSearchAt: new Date(),
-          updatedAt: new Date(),
-        },
-      });
+      await finishSearchRequest(requestId, {
+        status: 'awaiting_search', errorMessage,
+        ...(providerFailure ? providerFailurePolicy(providerFailure)
+          : noMatchPolicy(requestRecord.consecutiveNoMatch, allBlocked ? 'all_rejected' : 'no_results')),
+      }, jobId);
 
       return {
         success: false,
@@ -177,13 +169,15 @@ export async function processSearchIndexers(payload: SearchIndexersPayload): Pro
     const region = await configService.getAudibleRegion() as AudibleRegion;
     const langConfig = getLanguageForRegion(region);
 
-    // Rank results with indexer priorities and flag configs
-    // Note: rankTorrents now filters out results < 20 MB internally
-    // Use effectiveSearchTitle so custom search terms are respected for ranking
-    // requireAuthor: true (default) - strict filtering for automatic selection
-    const rankedResults = ranker.rankTorrents(searchResults, {
-      title: effectiveSearchTitle,
-      author: audiobook.author,
+    // Discovery terms never replace the requested book's identity.
+    const identityResults = searchResults.filter(result => {
+      const identity = assessAudioIdentity(result, { ...canonical, preferredLanguage: langConfig.code });
+      if (identity.status !== 'compatible') logger.info(`Automatic candidate ${identity.status}: ${identity.reasons.join('; ')}`);
+      return identity.status === 'compatible';
+    });
+    const rankedResults = ranker.rankTorrents(identityResults, {
+      title: canonical.title,
+      author: canonical.author,
       durationMinutes,
     }, {
       indexerPriorities,
@@ -224,15 +218,12 @@ export async function processSearchIndexers(payload: SearchIndexersPayload): Pro
       // No quality results found - queue for re-search instead of failing
       logger.warn(`No quality matches found for request ${requestId} (all below 50/100), marking as awaiting_search`);
 
-      await prisma.request.update({
-        where: { id: requestId },
-        data: {
-          status: 'awaiting_search',
-          errorMessage: 'No quality matches found. Will retry automatically.',
-          lastSearchAt: new Date(),
-          updatedAt: new Date(),
-        },
-      });
+      await finishSearchRequest(requestId, {
+        status: 'awaiting_search',
+        errorMessage: providerFailure ? `${providerFailure.message}. Will retry automatically.`
+          : 'No confirmed automatic match. Review unknown edition or format in Interactive Search, or wait for retry.',
+        ...(providerFailure ? providerFailurePolicy(providerFailure) : noMatchPolicy(requestRecord.consecutiveNoMatch, 'all_rejected')),
+      }, jobId);
 
       return {
         success: false,
@@ -247,7 +238,7 @@ export async function processSearchIndexers(payload: SearchIndexersPayload): Pro
     // Log top 3 results with detailed breakdown
     const top3 = filteredResults.slice(0, 3);
     logger.info(`==================== RANKING DEBUG ====================`);
-    logger.info(`Ranking Title: "${effectiveSearchTitle}"${effectiveSearchTitle !== audiobook.title ? ` (audiobook: "${audiobook.title}")` : ''}`);
+    logger.info(`Ranking Title: "${canonical.title}"`);
     logger.info(`Requested Author: "${audiobook.author}"`);
     logger.info(`Top ${top3.length} results (out of ${filteredResults.length} above threshold):`);
     logger.info(`--------------------------------------------------------`);
@@ -283,7 +274,11 @@ export async function processSearchIndexers(payload: SearchIndexersPayload): Pro
     logger.info(`========================================================`);
     logger.info(`Selected best result: ${bestResult.title} (final score: ${bestResult.finalScore.toFixed(1)})`);
 
-    // Trigger download job with best result
+    // Claim handoff only while this request still belongs to search.
+    reservedDownload = await finishSearchRequest(requestId, {
+      status: 'downloading', errorMessage: null, ...resetSearchPolicy(), lastSearchOutcome: 'matched',
+    }, jobId);
+    if (!reservedDownload) return { success: false, skipped: true, message: 'Request was claimed or cancelled during search', requestId };
     const jobQueue = getJobQueueService();
     await jobQueue.addDownloadJob(requestId, {
       id: audiobook.id,
@@ -306,13 +301,9 @@ export async function processSearchIndexers(payload: SearchIndexersPayload): Pro
   } catch (error) {
     logger.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
 
-    await prisma.request.update({
-      where: { id: requestId },
-      data: {
-        status: 'failed',
-        errorMessage: error instanceof Error ? error.message : 'Unknown error during search',
-        updatedAt: new Date(),
-      },
+    await prisma.request.updateMany({
+      where: { id: requestId, status: reservedDownload ? 'downloading' : 'searching', deletedAt: null, activeSearchJobId: reservedDownload ? null : jobId || null },
+      data: { status: 'failed', activeSearchJobId: null, errorMessage: error instanceof Error ? error.message : 'Search failed' },
     });
 
     throw error;

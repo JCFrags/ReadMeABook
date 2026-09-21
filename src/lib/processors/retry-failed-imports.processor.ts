@@ -14,6 +14,7 @@ import { getConfigService } from '../services/config.service';
 import { getDownloadClientManager, DownloadClientManager } from '../services/download-client-manager.service';
 import { PathMapper, PathMappingConfig } from '../utils/path-mapper';
 import { CLIENT_PROTOCOL_MAP, DownloadClientType, ProtocolType } from '../interfaces/download-client.interface';
+import { readCollectionSelection } from '../collections/validation';
 
 export interface RetryFailedImportsPayload {
   jobId?: string;
@@ -103,13 +104,19 @@ export async function processRetryFailedImports(payload: RetryFailedImportsPaylo
         }
 
         let downloadPath: string;
+        const collectionSelection = readCollectionSelection((downloadHistory as typeof downloadHistory & { collectionSelection?: unknown }).collectionSelection);
 
         // Get path mapping for this specific download client
         const clientType = downloadHistory.downloadClient || 'qbittorrent';
 
         // Direct downloads (e.g. Anna's Archive ebooks) have no external download client
         // Use stored path or construct from download_dir directly
-        if (clientType === 'direct') {
+        if (collectionSelection) {
+          // Collection paths are relative to the saved, mapped save_path. A client's
+          // content_path or torrent-name fallback would point at the wrong root.
+          downloadPath = getStoredPath(downloadHistory, request.id, logger);
+          if (!downloadPath) logger.warn(`Collection save root missing for request ${request.id}; manual intervention required`);
+        } else if (clientType === 'direct') {
           const noMapping: PathMappingConfig = { enabled: false, remotePath: '', localPath: '' };
           downloadPath = getStoredPath(downloadHistory, request.id, logger) || await getFallbackPath(downloadHistory, configService, noMapping, request.id, logger);
         } else {
@@ -162,11 +169,14 @@ export async function processRetryFailedImports(payload: RetryFailedImportsPaylo
           continue;
         }
 
-        await jobQueue.addOrganizeJob(
-          request.id,
-          request.audiobook.id,
-          downloadPath
-        );
+        if (collectionSelection) {
+          await jobQueue.addOrganizeJob(
+            request.id, request.audiobook.id, downloadPath,
+            undefined, false, undefined, collectionSelection,
+          );
+        } else {
+          await jobQueue.addOrganizeJob(request.id, request.audiobook.id, downloadPath);
+        }
         triggered++;
         logger.info(`Triggered organize job for ${request.type || 'audiobook'} request ${request.id}: ${request.audiobook.title}`);
 

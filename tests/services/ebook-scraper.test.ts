@@ -16,7 +16,7 @@ const axiosMock = vi.hoisted(() => ({
 const AxiosErrorMock = vi.hoisted(() =>
   class MockAxiosError extends Error {
     code?: string;
-    response?: { status?: number };
+    response?: { status?: number; headers?: Record<string, string> };
     config?: { url?: string };
     constructor(message?: string) {
       super(message);
@@ -698,4 +698,18 @@ describe('E-book sidecar', () => {
 
     vi.useRealTimers();
   });
+  it('optionally preserves HTTP failures and Retry-After without changing legacy empty results', async () => {
+    const { searchByAsin, searchByTitle, getSlowDownloadLinks } = await import('@/lib/services/ebook-scraper');
+    const error = new AxiosErrorMock('rate limited');
+    error.response = { status: 429, headers: { 'retry-after': '120' } };
+    axiosMock.get.mockRejectedValue(error);
+    await expect(searchByTitle('Example Book', 'Example Author', 'epub', 'https://example.com')).resolves.toBeNull();
+    await expect(searchByTitle('Example Book', 'Example Author', 'epub', 'https://example.com', undefined, undefined, 'en', true))
+      .rejects.toMatchObject({ status: 429, retryDelayMs: 120000 });
+    await expect(searchByAsin('EXAMPLE', 'epub', 'https://example.com', undefined, undefined, 'en', true))
+      .rejects.toMatchObject({ status: 429, retryDelayMs: 120000 });
+    await expect(getSlowDownloadLinks('example', 'https://example.com', undefined, undefined, true))
+      .rejects.toMatchObject({ status: 429, retryDelayMs: 120000 });
+  });
+
 });

@@ -7,6 +7,7 @@
  */
 
 import { prisma } from '../db';
+import { isProtectedCollectionSource, removeUnprotectedSource } from '../services/collection-source-guard';
 import { RMABLogger } from '../utils/logger';
 import { CLIENT_PROTOCOL_MAP, DownloadClientType } from '../interfaces/download-client.interface';
 
@@ -103,6 +104,12 @@ export async function processCleanupSeededTorrents(payload: CleanupSeededTorrent
           continue;
         }
 
+        if (await isProtectedCollectionSource(downloadHistory)) {
+          logger.info(`Keeping collection source and mapping for request ${request.id}`);
+          skipped++;
+          continue;
+        }
+
         // Skip Usenet downloads - no seeding concept
         if (downloadHistory.nzbId && !downloadHistory.torrentHash) {
           // For soft-deleted Usenet requests, hard delete immediately (no seeding needed)
@@ -182,6 +189,12 @@ export async function processCleanupSeededTorrents(payload: CleanupSeededTorrent
           continue;
         }
 
+        if (downloadInfo.tags?.includes('rmab-collection')) {
+          logger.info(`Keeping tagged collection source for request ${request.id}`);
+          skipped++;
+          continue;
+        }
+
         // Check seeding requirements: AND-semantics across time and ratio.
         // Each criterion is "met" when disabled (0) or when actual meets/exceeds it.
         // Undefined ratio with ratioMin > 0 is treated as not-met (safe-deny).
@@ -238,8 +251,13 @@ export async function processCleanupSeededTorrents(payload: CleanupSeededTorrent
           }
         }
 
-        // Safe to delete - no other active requests using this download
-        await client.deleteDownload(clientId, true); // true = delete files
+        // Recheck under the same database lock used to claim a collection.
+        const removed = await removeUnprotectedSource(downloadHistory, () => client.deleteDownload(clientId, true));
+        if (!removed) {
+          logger.info(`Keeping source claimed by a collection for request ${request.id}`);
+          skipped++;
+          continue;
+        }
         deletedHashes.add(clientId.toLowerCase());
 
         // If this is a soft-deleted request (orphaned download), hard delete it now

@@ -102,7 +102,7 @@ describe('ProwlarrService', () => {
 
     const service = new ProwlarrService('http://prowlarr', 'key');
 
-    await expect(service.search('Book')).rejects.toThrow('Failed to search Prowlarr: bad search');
+    await expect(service.search('Book')).rejects.toThrow('Search provider unavailable');
   });
 
   it('filters results for qBittorrent (torrent)', async () => {
@@ -162,7 +162,8 @@ describe('ProwlarrService', () => {
     axiosMock.get.mockResolvedValue({ data: xml });
     const service = new ProwlarrService('http://prowlarr', 'key');
 
-    const results = await service.getRssFeed(1);
+    const results = await service.getRssFeed(1, [3000, 7000]);
+    expect(axiosMock.get).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ params: expect.objectContaining({ cat: '3000,7000' }) }));
 
     expect(results).toHaveLength(1);
     expect(results[0].seeders).toBe(5);
@@ -467,4 +468,11 @@ describe('ProwlarrService', () => {
       process.env.PROWLARR_API_KEY = originalApiKey;
     }
   });
+  it('propagates a 429 and bounded Retry-After instead of returning empty variations', async () => {
+    clientMock.get.mockRejectedValue({ response: { status: 429, headers: { 'retry-after': '120' } } });
+    const service = new ProwlarrService('http://prowlarr', 'key');
+    await expect(service.searchWithVariations('Book', 'Author')).rejects.toMatchObject({ status: 429, retryDelayMs: 120000 });
+    expect(clientMock.get).toHaveBeenCalledTimes(1);
+  });
+
 });

@@ -51,6 +51,7 @@
 - **Series page dual layout (modern/legacy A/B)** → [integrations/audible.md](integrations/audible.md#series-page-dual-layout)
 
 ## E-book Support (First-Class)
+- **Preserve validated bundled ebooks without new acquisition:** [integrations/ebook-sidecar.md](integrations/ebook-sidecar.md#bundled-ebooks-no-additional-acquisition)
 - **First-class ebook requests, separate tracking** → [integrations/ebook-sidecar.md](integrations/ebook-sidecar.md)
 - **Multi-source ebook downloads (Anna's Archive + Indexer Search)** → [integrations/ebook-sidecar.md](integrations/ebook-sidecar.md)
 - **Ebook indexer search (Prowlarr with ebook categories)** → [integrations/ebook-sidecar.md](integrations/ebook-sidecar.md#flow-indexer-search)
@@ -64,9 +65,11 @@
 ## Automation Pipeline
 - **Full pipeline overview** → [phase3/README.md](phase3/README.md)
 - **Search via Prowlarr (torrents + NZBs)** → [phase3/prowlarr.md](phase3/prowlarr.md)
+- **Search cooldown, queue uniqueness, identity checks and RSS freshness:** [phase3/search-policy.md](phase3/search-policy.md)
 - **Torrent ranking/selection** → [phase3/ranking-algorithm.md](phase3/ranking-algorithm.md)
 - **Multi-download-client support (qBittorrent, Transmission, SABnzbd, NZBGet)** → [phase3/download-clients.md](phase3/download-clients.md)
 - **qBittorrent integration (torrents)** → [phase3/qbittorrent.md](phase3/qbittorrent.md)
+- **Bounded collection preview and per-book file selection:** [features/collection-workflow.md](features/collection-workflow.md)
 - **SABnzbd integration (Usenet/NZB)** → [phase3/sabnzbd.md](phase3/sabnzbd.md)
 - **File organization, seeding** → [phase3/file-organization.md](phase3/file-organization.md)
 - **Chapter merging (auto-merge to M4B)** → [features/chapter-merging.md](features/chapter-merging.md)
@@ -115,6 +118,7 @@
 - **Accurate ASIN matching for RMAB-organized content** → [fixes/file-hash-matching.md](fixes/file-hash-matching.md)
 
 ## Deployment
+- **JCFrags fork scope, source, build and rollback** → [../FORK.md](../FORK.md)
 - **Docker Compose setup (multi-container)** → [deployment/docker.md](deployment/docker.md)
 - **Unified container (all-in-one)** → [deployment/unified.md](deployment/unified.md)
 - **Environment variables, volumes** → [deployment/docker.md](deployment/docker.md)

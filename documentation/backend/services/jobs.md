@@ -20,6 +20,8 @@ Manages background job queue using Bull (Redis-backed) for async tasks: searchin
 - Priority: High (10), Medium (5), Low (1)
 - Concurrency: 3 per job type
 - Jobs survive app restarts
+- Search jobs use deterministic request/type Bull IDs and a short Redis enqueue lock. An existing live job is reused. Historical pending database rows without a live Bull job do not lock a request.
+- Search lifecycle events update the exact database job ID, not a reusable Bull ID.
 - Remove on complete: keep last 100
 - Remove on fail: keep last 200
 - MaxListeners: 20 on both Redis client and Bull queue (accommodates 12 job processors)
@@ -40,6 +42,8 @@ Manages background job queue using Bull (Redis-backed) for async tasks: searchin
 - `download_torrent` immediately tries the next ranked release; the successful candidate is the only one written to download history.
 - If every ranked grab is temporarily unavailable, the job remains retryable under Bull's exponential backoff. The global failed handler marks the request failed only after all job attempts are exhausted.
 - Manual selections carry no alternates and retain their explicit-release behavior.
+- Queue failure handlers run request-failure updates only after attempts are exhausted. `download_torrent` requires its exact `activeDownloadJobId` claim. `monitor_download` requires its exact current selected history row and rejects a newer selection atomically. Legacy jobs without a claim cannot fail another owner.
+- `OrganizeFilesPayload.collectionSelection` and the seventh `addOrganizeJob` argument carry the versioned collection manifest. Its paths are relative to qBittorrent `save_path`, including the torrent-root prefix, not relative to `content_path`.
 
 ## Special Behaviors
 
@@ -53,9 +57,13 @@ Manages background job queue using Bull (Redis-backed) for async tasks: searchin
 - Only logs progress at 5% intervals or first 5%
 - Auto-reschedules until complete/failed
 
-**search_indexers:**
-- No torrents found → 'awaiting_search' status (not failed)
-- Allows automatic retry via scheduled job
+**search_indexers / search_ebook:**
+- Confirmed no match → `awaiting_search`, with persisted delays of 1, 3, 7, then 14 days.
+- Provider failures do not increment `consecutiveNoMatch`. `Retry-After` is bounded to 1 minute through 24 hours. Partial failed discovery cannot confirm absence.
+- Search claims and completion writes require the current state and `activeSearchJobId`. Stale queued work cannot replace a collection, download, or cancellation.
+- Custom terms affect discovery only. Automatic audio ranking uses canonical metadata and rejects explicit identity conflicts. Unknown format or requested edition/volume requires manual selection. Catalog narrator metadata alone does not require narrator evidence from every release.
+- Manual retry and eligible custom-term changes reset policy before enqueue. Automatic retry uses `nextSearchAt`.
+- See [search policy](../../phase3/search-policy.md) for helper and enqueue contracts.
 - Upstream release-date gate: 4 enqueue sites (`request-creator.service`, `retry-missing-torrents.processor`, `monitor-rss-feeds.processor`, `bookdate/swipe/route`) check `shouldSkipAutoSearch` against `indexer.skip_unreleased`; gated requests are created/kept in `awaiting_release` and `addSearchJob` is not called. Manual search bypasses the gate.
 
 **organize_files:**

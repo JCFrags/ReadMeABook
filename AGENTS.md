@@ -1,26 +1,27 @@
-# ReadMeABook Agent Instructions
+# ReadMeABook agent instructions
 
-These are the repository-wide instructions for all agents. Also follow the project standards and approval workflow in `CLAUDE.md`.
+Follow the project standards in `CLAUDE.md`. This is the JCFrags fork of ReadMeABook. See `FORK.md` for scope and deployment requirements.
 
-## Shared Developer Docker Compose
+## Source and delivery
 
-- The canonical developer Compose file is `C:\GIT\ReadMeABook\docker-compose.yml`.
-- It is intentionally local-only, marked `skip-worktree`, and contains private machine configuration. Never print its full contents, expose its credentials, or include it in a commit.
-- The active data bind mounts are hard-coded to `C:\GIT\ReadMeABook\config`, `cache`, `bookdrop`, `pgdata`, and `redis`, so every worktree uses the same developer data. Keep these mounts absolute.
-- From any ReadMeABook worktree, pass its Git root as `--project-directory`. This keeps `build.context: .` pointed at that worktree's source code while the absolute data mounts continue to use the canonical root directories:
+- Keep changes on a focused branch. Use separate worktrees for non-overlapping agent assignments.
+- Do not change another worktree's files or assume it shares development data.
+- Preserve the AGPL license and upstream notices. Keep the running application's fork-source link accurate.
+- Screen outgoing files, diffs, commit metadata and reports for credentials, personal information and private local paths.
+- Use `JCFrags` for the fork owner's public identity. Do not copy workstation account names or private deployment details into this repository.
+- Run the full existing `npm test` suite and build the unified image from the changed source before delivery.
+- Use the normal pull-request checks and merge process. Deploy an exact accepted commit or image digest, not uncommitted container edits.
 
-```powershell
-$rmabWorktree = (git rev-parse --show-toplevel).Trim()
-docker compose --project-directory $rmabWorktree -f C:\GIT\ReadMeABook\docker-compose.yml build readmeabook
-docker compose --project-directory $rmabWorktree -f C:\GIT\ReadMeABook\docker-compose.yml up -d
+## Local container build
+
+The tracked production Compose file references a prebuilt image. It does not build local source. Use the explicit development file:
+
+```sh
+docker compose -f docker-compose.local.yml build readmeabook
 ```
 
-- To build and start in one command:
+Podman users can build the same source with `podman build -f dockerfile.unified .`.
 
-```powershell
-$rmabWorktree = (git rev-parse --show-toplevel).Trim()
-docker compose --project-directory $rmabWorktree -f C:\GIT\ReadMeABook\docker-compose.yml up -d --build
-```
+Before starting a development container, inspect the Compose file's ports, container name and bind mounts. Use task-owned data and ports. Never replace a running container or attach production databases to a development instance without approval.
 
-- Do not use a plain `docker compose build readmeabook` unless the active worktree's Compose file has first been verified to contain a `build` section. The tracked production Compose normally references a prebuilt registry image, making that command a no-op.
-- The developer Compose uses the fixed container name `readmeabook-test`. Before starting it, inspect any existing container with that name. Do not remove or replace an existing container without user approval.
+Keep machine-specific Compose overrides outside version control. Never print their full contents or commit their credentials. Do not run a plain production `docker compose build` and report it as source-build verification.

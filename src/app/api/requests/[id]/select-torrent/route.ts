@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, AuthenticatedRequest } from '@/lib/middleware/auth';
 import { prisma } from '@/lib/db';
+import { Prisma } from '@/generated/prisma';
 import { getJobQueueService } from '@/lib/services/job-queue.service';
 import { TorrentResult } from '@/lib/utils/ranking-algorithm';
 import { RMABLogger } from '@/lib/utils/logger';
@@ -67,6 +68,17 @@ export async function POST(
         return NextResponse.json(
           { error: 'AwaitingApproval', message: 'This request is awaiting admin approval. You cannot download torrents until it is approved.' },
           { status: 403 }
+        );
+      }
+
+      const collection = await prisma.downloadHistory.findFirst({
+        where: { requestId: id, selected: true, collectionSelection: { not: Prisma.AnyNull } },
+        select: { id: true },
+      });
+      if (collection) {
+        return NextResponse.json(
+          { error: 'CollectionRecoveryRequired', message: 'This request has a selected collection. Use collection selection or import recovery instead of an ordinary download.' },
+          { status: 409 }
         );
       }
 
