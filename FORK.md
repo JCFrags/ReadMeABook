@@ -50,6 +50,8 @@ Back up the database, configuration and queued state before an image change. The
 
 The pipeline fields are additive. Before activation, compare the live schema with the proposed schema and review the generated changes. Allow enough stop time for PostgreSQL and Redis, and verify a clean shutdown before taking a cold snapshot.
 
+Supervisor stops the application process group, including the Node child of its startup wrapper. PostgreSQL receives `SIGINT` for fast shutdown and has 60 seconds to finish. Keep the container stop timeout at least 120 seconds. A successful service-stop result alone is not proof of a clean database shutdown. Check the shutdown log and `pg_controldata` state before accepting a cold backup.
+
 Upstream v1.2.3 runs schema sync with automatic data-loss approval on every start. Do not start that older image against the fork database as an unreviewed rollback. It can remove the new policy and collection fields. Preserve the latest state and restore a matching protected snapshot through a reviewed recovery procedure. Keep source media and collection manifests recoverable.
 
 Collection cleanup and request deletion retain mapped or tagged collection torrents. These operations share the collection setup transaction lock and recheck the persisted mapping before any source deletion. Removing a collection source remains a separate explicit download-client action.
