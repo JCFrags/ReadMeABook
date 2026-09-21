@@ -11,6 +11,9 @@ import { getJobQueueService } from '../services/job-queue.service';
 import { shouldSkipAutoSearch } from '../utils/release-date';
 import { getBlocklistForRequest } from '../services/blocklist.service';
 import { normalizeReleaseKey } from '../utils/release-key';
+import { getCategoriesForType } from '../utils/indexer-grouping';
+import { rssReleaseKey } from '../utils/rss-freshness';
+import { assessAudioIdentity } from '../utils/audio-identity';
 
 export interface MonitorRssFeedsPayload {
   jobId?: string;
@@ -56,10 +59,19 @@ export async function processMonitorRssFeeds(payload: MonitorRssFeedsPayload): P
   const { getProwlarrService } = await import('../integrations/prowlarr.service');
   const prowlarrService = await getProwlarrService();
 
-  const indexerIds = rssEnabledIndexers.map((i: any) => i.id);
-  const rssResults = await prowlarrService.getAllRssFeeds(indexerIds);
+  const ebookEnabled = (await configService.get('ebook_indexer_search_enabled')) === 'true';
+  const feeds = rssEnabledIndexers.map((indexer: any) => ({
+    indexerId: indexer.id,
+    categories: [...new Set([
+      ...getCategoriesForType(indexer, 'audiobook'),
+      ...(ebookEnabled ? getCategoriesForType(indexer, 'ebook') : []),
+    ])],
+  })).filter((feed: { categories: number[] }) => feed.categories.length > 0);
+  const allRssResults = await prowlarrService.getAllRssFeeds(feeds);
+  const jobQueue = getJobQueueService();
+  const rssResults = await jobQueue.observeRssReleases(allRssResults);
 
-  logger.info(`Retrieved ${rssResults.length} items from RSS feeds`);
+  logger.info(`Retrieved ${allRssResults.length} RSS items, ${rssResults.length} newly published identities`);
 
   if (rssResults.length === 0) {
     return { success: true, message: 'No RSS results', matched: 0 };
@@ -103,7 +115,6 @@ export async function processMonitorRssFeeds(payload: MonitorRssFeedsPayload): P
 
   // Match RSS results against missing requests
   let matched = 0;
-  const jobQueue = getJobQueueService();
 
   for (const request of missingRequests) {
     const audiobook = request.audiobook;
@@ -120,6 +131,10 @@ export async function processMonitorRssFeeds(payload: MonitorRssFeedsPayload): P
     );
 
     for (const torrent of rssResults) {
+      const indexer = rssEnabledIndexers.find((entry: any) => entry.id === torrent.indexerId);
+      if (!indexer || !getCategoriesForType(indexer, request.type === 'ebook' ? 'ebook' : 'audiobook').length) continue;
+      if (request.type === 'ebook' && !ebookEnabled) continue;
+      if (request.type !== 'ebook' && assessAudioIdentity(torrent, audiobook).status !== 'compatible') continue;
       const torrentTitle = torrent.title.toLowerCase();
 
       // Check if torrent contains author name and at least 2 title words
@@ -159,23 +174,23 @@ export async function processMonitorRssFeeds(payload: MonitorRssFeedsPayload): P
         // Trigger appropriate search job based on request type
         try {
           if (request.type === 'ebook') {
-            await jobQueue.addSearchEbookJob(request.id, {
+            const queued = await jobQueue.addSearchEbookJob(request.id, {
               id: audiobook.id,
               title: audiobook.title,
               author: audiobook.author,
               asin: audiobook.audibleAsin || undefined,
-            });
-            matched++;
-            logger.info(`Triggered ebook search job for request ${request.id}`);
+            }, undefined, { trigger: 'rss', evidenceKey: rssReleaseKey(torrent) });
+            if (queued) matched++;
+            logger.info(`RSS ebook search ${queued ? 'queued' : 'not eligible'} for request ${request.id}`);
           } else {
-            await jobQueue.addSearchJob(request.id, {
+            const queued = await jobQueue.addSearchJob(request.id, {
               id: audiobook.id,
               title: audiobook.title,
               author: audiobook.author,
               asin: audiobook.audibleAsin || undefined,
-            });
-            matched++;
-            logger.info(`Triggered audiobook search job for request ${request.id}`);
+            }, { trigger: 'rss', evidenceKey: rssReleaseKey(torrent) });
+            if (queued) matched++;
+            logger.info(`RSS audiobook search ${queued ? 'queued' : 'not eligible'} for request ${request.id}`);
           }
         } catch (error) {
           logger.error(`Failed to trigger search for request ${request.id}: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -196,7 +211,8 @@ export async function processMonitorRssFeeds(payload: MonitorRssFeedsPayload): P
     success: true,
     message: 'RSS monitoring completed',
     matched,
-    totalFeeds: rssResults.length,
+    totalFeeds: allRssResults.length,
+    newReleases: rssResults.length,
     totalMissing: missingRequests.length,
   };
 }

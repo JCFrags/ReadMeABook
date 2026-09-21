@@ -238,14 +238,30 @@ describe('Request action routes', () => {
       status: 'failed',
       audiobook: { id: 'ab-1', title: 'Title', author: 'Author', audibleAsin: 'ASIN' },
     });
-    prismaMock.request.update.mockResolvedValueOnce({ id: 'req-2', status: 'pending' });
+    prismaMock.request.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.request.findUnique.mockResolvedValueOnce({ id: 'req-2', status: 'pending' });
 
     const { POST } = await import('@/app/api/requests/[id]/manual-search/route');
     const response = await POST({} as any, { params: Promise.resolve({ id: 'req-2' }) });
     const payload = await response.json();
 
     expect(payload.success).toBe(true);
-    expect(jobQueueMock.addSearchJob).toHaveBeenCalled();
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ nextSearchAt: null, consecutiveNoMatch: 0, activeSearchJobId: null }),
+    }));
+    expect(jobQueueMock.addSearchJob).toHaveBeenCalledWith('req-2', expect.any(Object), { trigger: 'manual' });
+  });
+
+  it('rejects manual search before state or queue writes for a selected collection', async () => {
+    prismaMock.request.findUnique.mockResolvedValueOnce({ id: 'req-collection', userId: 'user-1', status: 'awaiting_search', audiobook: {} });
+    prismaMock.downloadHistory.findFirst.mockResolvedValueOnce({ id: 'collection-history' });
+    const { POST } = await import('@/app/api/requests/[id]/manual-search/route');
+    const response = await POST({} as any, { params: Promise.resolve({ id: 'req-collection' }) });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toBe('CollectionRecoveryRequired');
+    expect(prismaMock.request.updateMany).not.toHaveBeenCalled();
+    expect(jobQueueMock.addSearchJob).not.toHaveBeenCalled();
+    expect(jobQueueMock.addSearchEbookJob).not.toHaveBeenCalled();
   });
 
   it('returns 401 when manual search user is not authenticated', async () => {
@@ -300,6 +316,22 @@ describe('Request action routes', () => {
 
     expect(response.status).toBe(400);
     expect(payload.error).toBe('ValidationError');
+  });
+
+  it('keeps a selected collection out of ordinary torrent selection', async () => {
+    authRequest.json.mockResolvedValue({ torrent: { title: 'Ordinary release', size: 100 } });
+    prismaMock.request.findUnique.mockResolvedValueOnce({
+      id: 'req-collection', userId: 'user-1', status: 'failed',
+      audiobook: { id: 'book-collection', title: 'Example Book', author: 'Example Author' },
+    });
+    prismaMock.downloadHistory.findFirst.mockResolvedValueOnce({ id: 'collection-history' });
+    const { POST } = await import('@/app/api/requests/[id]/select-torrent/route');
+    const response = await POST({} as any, { params: Promise.resolve({ id: 'req-collection' }) });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toBe('CollectionRecoveryRequired');
+    expect(jobQueueMock.addDownloadJob).not.toHaveBeenCalled();
+    expect(prismaMock.request.update).not.toHaveBeenCalled();
+    expect(prismaMock.request.updateMany).not.toHaveBeenCalled();
   });
 
   it('selects a torrent and queues download', async () => {

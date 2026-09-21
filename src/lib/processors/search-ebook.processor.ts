@@ -17,6 +17,8 @@ import { groupIndexersByCategories, getGroupDescription } from '../utils/indexer
 import { getLanguageForRegion } from '../constants/language-config';
 import { filterBlockedResults } from '../utils/filter-blocked-results';
 import type { AudibleRegion } from '../types/audible';
+import { noMatchPolicy, providerFailurePolicy, resetSearchPolicy, asSearchProviderError, SearchProviderError } from '../utils/search-policy';
+import { claimSearchRequest, finishSearchRequest } from '../utils/search-state';
 
 // Import ebook scraper functions for Anna's Archive
 import {
@@ -36,21 +38,14 @@ export async function processSearchEbook(payload: SearchEbookPayload): Promise<a
 
   logger.info(`Processing ebook request ${requestId} for "${audiobook.title}"`);
 
+  let reservedDownload = false;
   try {
-    // Update request status to searching and fetch custom search terms
-    const requestRecord = await prisma.request.update({
-      where: { id: requestId },
-      data: {
-        status: 'searching',
-        searchAttempts: { increment: 1 },
-        updatedAt: new Date(),
-      },
-      select: { customSearchTerms: true },
-    });
-
-    // Use custom search terms if set, otherwise use audiobook title
-    const effectiveSearchTitle = requestRecord?.customSearchTerms || audiobook.title;
-    const searchAudiobook = { ...audiobook, title: effectiveSearchTitle };
+    const requestRecord = await claimSearchRequest(requestId, payload.searchTrigger, jobId);
+    if (!requestRecord) return { success: false, skipped: true, message: 'Request is no longer eligible for search', requestId };
+    const canonical = requestRecord.audiobook;
+    const effectiveSearchTitle = requestRecord.customSearchTerms || canonical.title;
+    const searchAudiobook = { ...audiobook, title: canonical.title, author: canonical.author };
+    let providerFailure: SearchProviderError | undefined;
 
     if (requestRecord?.customSearchTerms) {
       logger.info(`Using custom search terms: "${effectiveSearchTitle}" (original: "${audiobook.title}")`);
@@ -72,7 +67,11 @@ export async function processSearchEbook(payload: SearchEbookPayload): Promise<a
     // ========== STEP 1: Try Anna's Archive (if enabled) ==========
     if (annasArchiveEnabled) {
       logger.info(`Searching Anna's Archive...`);
-      annasArchiveResult = await searchAnnasArchive(searchAudiobook, preferredFormat, logger);
+      try {
+        annasArchiveResult = await searchAnnasArchive(searchAudiobook, preferredFormat, logger);
+      } catch (error) {
+        providerFailure = asSearchProviderError(error);
+      }
 
       if (annasArchiveResult) {
         logger.info(`Found ebook via Anna's Archive (score: ${annasArchiveResult.score})`);
@@ -84,7 +83,12 @@ export async function processSearchEbook(payload: SearchEbookPayload): Promise<a
     // ========== STEP 2: Try Indexer Search (if enabled and no Anna's Archive result) ==========
     if (!annasArchiveResult && indexerSearchEnabled) {
       logger.info(`Searching indexers...`);
-      indexerResult = await searchIndexers(requestId, searchAudiobook, preferredFormat, logger);
+      try {
+        indexerResult = await searchIndexers(requestId, searchAudiobook, preferredFormat, logger, effectiveSearchTitle);
+      } catch (error) {
+        const failure = asSearchProviderError(error);
+        if (!providerFailure || failure.retryDelayMs > providerFailure.retryDelayMs) providerFailure = failure;
+      }
 
       if (indexerResult) {
         logger.info(`Found ebook via indexer search (score: ${indexerResult.finalScore.toFixed(1)})`);
@@ -106,15 +110,12 @@ export async function processSearchEbook(payload: SearchEbookPayload): Promise<a
 
       logger.warn(`No ebook found for request ${requestId}, marking as awaiting_search`);
 
-      await prisma.request.update({
-        where: { id: requestId },
-        data: {
-          status: 'awaiting_search',
-          errorMessage: message,
-          lastSearchAt: new Date(),
-          updatedAt: new Date(),
-        },
-      });
+      if (!enabledSources.length) providerFailure = new SearchProviderError();
+      await finishSearchRequest(requestId, {
+        status: 'awaiting_search',
+        errorMessage: providerFailure ? `${providerFailure.message}. Will retry automatically.` : message,
+        ...(providerFailure ? providerFailurePolicy(providerFailure) : noMatchPolicy(requestRecord.consecutiveNoMatch, 'no_results')),
+      }, jobId);
 
       return {
         success: false,
@@ -122,6 +123,12 @@ export async function processSearchEbook(payload: SearchEbookPayload): Promise<a
         requestId,
       };
     }
+
+    // Claim handoff before queueing. A concurrent collection claim wins.
+    reservedDownload = await finishSearchRequest(requestId, {
+      status: 'downloading', errorMessage: null, ...resetSearchPolicy(), lastSearchOutcome: 'matched',
+    }, jobId);
+    if (!reservedDownload) return { success: false, skipped: true, message: 'Request was claimed or cancelled during search', requestId };
 
     // ========== STEP 4: Route to Appropriate Download ==========
     if (annasArchiveResult) {
@@ -138,13 +145,9 @@ export async function processSearchEbook(payload: SearchEbookPayload): Promise<a
   } catch (error) {
     logger.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
 
-    await prisma.request.update({
-      where: { id: requestId },
-      data: {
-        status: 'failed',
-        errorMessage: error instanceof Error ? error.message : 'Unknown error during ebook search',
-        updatedAt: new Date(),
-      },
+    await prisma.request.updateMany({
+      where: { id: requestId, status: reservedDownload ? 'downloading' : 'searching', deletedAt: null, activeSearchJobId: reservedDownload ? null : jobId || null },
+      data: { status: 'failed', activeSearchJobId: null, errorMessage: error instanceof Error ? error.message : 'Ebook search failed' },
     });
 
     throw error;
@@ -178,7 +181,7 @@ async function searchAnnasArchive(
   // Try ASIN search first (exact match - best)
   if (audiobook.asin) {
     logger.info(`Searching Anna's Archive by ASIN: ${audiobook.asin} (format: ${preferredFormat})...`);
-    md5 = await searchByAsin(audiobook.asin, preferredFormat, baseUrl, logger, flaresolverrUrl, languageCode);
+    md5 = await searchByAsin(audiobook.asin, preferredFormat, baseUrl, logger, flaresolverrUrl, languageCode, true);
 
     if (md5) {
       logger.info(`Found via ASIN: ${md5}`);
@@ -191,7 +194,7 @@ async function searchAnnasArchive(
   // Fallback to title + author search
   if (!md5) {
     logger.info(`Searching Anna's Archive by title + author: "${audiobook.title}" by ${audiobook.author}...`);
-    md5 = await searchByTitle(audiobook.title, audiobook.author, preferredFormat, baseUrl, logger, flaresolverrUrl, languageCode);
+    md5 = await searchByTitle(audiobook.title, audiobook.author, preferredFormat, baseUrl, logger, flaresolverrUrl, languageCode, true);
 
     if (md5) {
       logger.info(`Found via title search: ${md5}`);
@@ -204,7 +207,7 @@ async function searchAnnasArchive(
   }
 
   // Get slow download links
-  const slowLinks = await getSlowDownloadLinks(md5, baseUrl, logger, flaresolverrUrl);
+  const slowLinks = await getSlowDownloadLinks(md5, baseUrl, logger, flaresolverrUrl, true);
 
   if (slowLinks.length === 0) {
     logger.warn(`Found MD5 ${md5} but no download links available`);
@@ -231,7 +234,8 @@ async function searchIndexers(
   requestId: string,
   audiobook: { title: string; author: string },
   preferredFormat: string,
-  logger: RMABLogger
+  logger: RMABLogger,
+  discoveryTitle?: string
 ): Promise<RankedEbookTorrent | null> {
   const configService = getConfigService();
 
@@ -239,15 +243,13 @@ async function searchIndexers(
   const indexersConfigStr = await configService.get('prowlarr_indexers');
 
   if (!indexersConfigStr) {
-    logger.warn('No indexers configured');
-    return null;
+    throw new SearchProviderError();
   }
 
   const indexersConfig = JSON.parse(indexersConfigStr);
 
   if (indexersConfig.length === 0) {
-    logger.warn('No indexers enabled');
-    return null;
+    throw new SearchProviderError();
   }
 
   // Build indexer priorities map (indexerId -> priority 1-25, default 10)
@@ -261,6 +263,7 @@ async function searchIndexers(
 
   // Group indexers by their EBOOK category configuration
   const { groups, skippedIndexers } = groupIndexersByCategories(indexersConfig, 'ebook');
+  if (!groups.length) throw new SearchProviderError();
 
   if (skippedIndexers.length > 0) {
     const skippedNames = skippedIndexers.map(idx => idx.name).join(', ');
@@ -278,12 +281,17 @@ async function searchIndexers(
   const prowlarr = await getProwlarrService();
 
   // Build search query (title only - cast wide net, let ranking filter)
-  const searchQuery = audiobook.title;
+  const searchQuery = discoveryTitle || audiobook.title;
 
   logger.info(`Searching for: "${searchQuery}"`);
 
   // Search Prowlarr for each group and combine results
   const allResults = [];
+  let providerFailure: SearchProviderError | undefined;
+  const noResult = () => {
+    if (providerFailure) throw providerFailure;
+    return null;
+  };
 
   for (let i = 0; i < groups.length; i++) {
     const group = groups[i];
@@ -300,16 +308,16 @@ async function searchIndexers(
       logger.info(`Group ${i + 1} returned ${groupResults.length} results`);
       allResults.push(...groupResults);
     } catch (error) {
-      logger.error(`Group ${i + 1} search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      // Continue with other groups even if one fails
+      const failure = asSearchProviderError(error);
+      if (!providerFailure || failure.retryDelayMs > providerFailure.retryDelayMs) providerFailure = failure;
+      logger.warn(`Group ${i + 1} search failed: ${failure.message}`);
+      if (failure.status === 429) break;
     }
   }
 
   logger.info(`Found ${allResults.length} total results from ${groups.length} group${groups.length > 1 ? 's' : ''}`);
 
-  if (allResults.length === 0) {
-    return null;
-  }
+  if (allResults.length === 0) return noResult();
 
   // Strip blocklisted releases before ranking.
   const { kept: nonBlockedResults, blockedCount } = await filterBlockedResults(requestId, allResults);
@@ -319,7 +327,7 @@ async function searchIndexers(
 
   if (nonBlockedResults.length === 0) {
     logger.warn(`All ${allResults.length} ebook candidates were blocklisted`);
-    return null;
+    return noResult();
   }
 
   // Log filter info (ebooks > 20MB will be filtered)
@@ -369,7 +377,7 @@ async function searchIndexers(
 
   if (filteredResults.length === 0) {
     logger.warn(`No quality matches found (all below 50/100)`);
-    return null;
+    return noResult();
   }
 
   // Select best result

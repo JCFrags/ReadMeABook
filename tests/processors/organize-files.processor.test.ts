@@ -4,6 +4,9 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { createPrismaMock } from '../helpers/prisma';
 import { generateFilesHash } from '@/lib/utils/files-hash';
 
@@ -50,8 +53,10 @@ describe('processOrganizeFiles', () => {
     prismaMock.request.findUnique.mockResolvedValue({
       id: 'req-default',
       type: 'audiobook', // Default to audiobook type
+      status: 'downloading',
       user: { plexUsername: 'testuser' },
     });
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
     // Default passthrough for Plex format coercion (issue #166): leave audio files unchanged
     formatCoercionMock.coerceToPlexCompatible.mockImplementation(async (paths: string[]) => ({
       renamed: [],
@@ -59,6 +64,58 @@ describe('processOrganizeFiles', () => {
       errors: [],
       finalAudioFiles: paths,
     }));
+  });
+
+  it('blocks an ebook-only release and waits for cooled audio search without retrying import', async () => {
+    prismaMock.request.findUnique.mockResolvedValue({ id: 'req-format', type: 'audiobook', status: 'downloading', consecutiveNoMatch: 1, user: { plexUsername: 'user' } });
+    prismaMock.audiobook.findUnique.mockResolvedValue({ id: 'book', title: 'Book', author: 'Author' });
+    prismaMock.downloadHistory.findFirst.mockResolvedValue({ id: 'history', torrentName: 'Book EPUB', torrentHash: 'hash' });
+    prismaMock.blockedRelease.upsert.mockResolvedValue({ id: 'block', createdAt: new Date() });
+    organizerMock.organize.mockResolvedValue({ success: false, failureKind: 'wrong_format', errors: ['Wrong format'], audioFiles: [] });
+    const { processOrganizeFiles } = await import('@/lib/processors/organize-files.processor');
+    const result = await processOrganizeFiles({ requestId: 'req-format', audiobookId: 'book', downloadPath: '/downloads/book' });
+    expect(result).toMatchObject({ success: false, failureKind: 'wrong_format', automaticSearchEligible: true });
+    expect(prismaMock.request.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: { id: 'req-format', status: 'processing', deletedAt: null },
+      data: expect.objectContaining({ status: 'awaiting_search', consecutiveNoMatch: 2, lastSearchOutcome: 'wrong_format', nextSearchAt: expect.any(Date) }),
+    }));
+    expect(prismaMock.blockedRelease.upsert).toHaveBeenCalledOnce();
+    expect(prismaMock.audiobook.update).not.toHaveBeenCalled();
+    expect(prismaMock.downloadHistory.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.request.update).not.toHaveBeenCalled();
+
+    prismaMock.blockedRelease.upsert.mockRejectedValueOnce(new Error('database unavailable'));
+    const failedBlock = await processOrganizeFiles({ requestId: 'req-format', audiobookId: 'book', downloadPath: '/downloads/book' });
+    expect(failedBlock.automaticSearchEligible).toBe(false);
+    expect(prismaMock.request.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'failed' }) }));
+  });
+
+  it('does not revive a cooled request from a stale organize job', async () => {
+    prismaMock.request.findUnique.mockResolvedValue({ id: 'req-stale', type: 'audiobook', status: 'awaiting_search', lastSearchOutcome: 'wrong_format' });
+    const { processOrganizeFiles } = await import('@/lib/processors/organize-files.processor');
+    const result = await processOrganizeFiles({ requestId: 'req-stale', audiobookId: 'book', downloadPath: '/downloads/book' });
+    expect(result).toMatchObject({ skipped: true, reason: 'stale_import' });
+    expect(organizerMock.organize).not.toHaveBeenCalled();
+    expect(prismaMock.request.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('reloads a collection manifest on retry and never cleans its shared save root', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rmab-collection-test-'));
+    try {
+      await fs.writeFile(path.join(root, 'retained.txt'), 'retained');
+      const manifest = { version: 1, batchId: 'batch', infoHash: 'a'.repeat(40), files: [{ index: 0, path: 'Pack/Book.mp3', size: 100, kind: 'audio' }] };
+      prismaMock.downloadHistory.findFirst.mockResolvedValue({ id: 'history', downloadPath: root, collectionSelection: manifest });
+      prismaMock.audiobook.findUnique.mockResolvedValue({ id: 'book', title: 'Book', author: 'Author' });
+      organizerMock.organize.mockResolvedValue({ success: true, targetPath: '/media/Author/Book', filesMovedCount: 1, errors: [], audioFiles: ['/media/Author/Book/Book.mp3'] });
+      configMock.get.mockResolvedValue('false');
+      const { processOrganizeFiles } = await import('@/lib/processors/organize-files.processor');
+      const result = await processOrganizeFiles({ requestId: 'request', audiobookId: 'book', downloadPath: '/wrong/content/path', cleanupSource: true });
+      expect(result.success).toBe(true);
+      expect(organizerMock.organize).toHaveBeenCalledWith(root, expect.anything(), expect.anything(), undefined, expect.anything(), undefined, manifest);
+      expect(await fs.readFile(path.join(root, 'retained.txt'), 'utf8')).toBe('retained');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it('organizes files and triggers filesystem scan when enabled', async () => {
@@ -284,6 +341,7 @@ describe('processOrganizeFiles', () => {
     });
     prismaMock.request.findUnique.mockResolvedValue({
       id: 'req-6',
+      status: 'downloading',
       audiobook: { title: 'Book', author: 'Author' },
       user: { plexUsername: 'user' },
     });
@@ -363,6 +421,7 @@ describe('processOrganizeFiles', () => {
     });
     prismaMock.request.findUnique.mockResolvedValue({
       id: 'req-7',
+      status: 'downloading',
       audiobook: { title: 'Book', author: 'Author' },
       user: { plexUsername: 'user' },
     });

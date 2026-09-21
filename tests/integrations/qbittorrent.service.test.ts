@@ -67,6 +67,22 @@ describe('QBittorrentService', () => {
     invalidateQBittorrentService();
   });
 
+  it.each([['v4.6.0', 'paused'], ['v5.1.0', 'stopped']])('adds collection metadata stopped on %s', async (version, parameter) => {
+    const service = new QBittorrentService('http://qb', '', '');
+    const hash = 'a'.repeat(40);
+    parseTorrentMock.mockResolvedValue({ infoHash: hash });
+    vi.spyOn(service, 'findTorrent').mockResolvedValue(null);
+    vi.spyOn(service as any, 'ensureCategory').mockResolvedValue(undefined);
+    clientMock.get.mockResolvedValue({ data: version });
+    clientMock.post.mockResolvedValue({ data: 'Ok.' });
+    expect(await service.addCollectionTorrent(Buffer.from('metadata'), hash, 'rmab-collection-11111111-1111-4111-8111-111111111111')).toEqual({ created: true });
+    const [endpoint, form] = clientMock.post.mock.calls[0];
+    expect(endpoint).toBe('/torrents/add');
+    expect(form.getBuffer().toString()).toContain(`name="${parameter}"\r\n\r\ntrue`);
+    expect(form.getBuffer().toString()).toContain('rmab-collection');
+    expect(clientMock.post).toHaveBeenCalledTimes(1);
+  });
+
   it('maps download progress from torrent info', () => {
     const service = new QBittorrentService('http://qb', 'user', 'pass');
     const progress = service.getDownloadProgress({

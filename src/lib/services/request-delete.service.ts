@@ -6,6 +6,7 @@
  */
 
 import { prisma } from '../db';
+import { isProtectedCollectionSource, removeUnprotectedSource } from './collection-source-guard';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { RMABLogger } from '../utils/logger';
@@ -103,7 +104,14 @@ export async function deleteRequest(
 
     // 2. Handle downloads & seeding (skip for ebooks - they use direct HTTP downloads)
     const downloadHistory = request.downloadHistory[0];
-    const skipTorrentHandling = isEbook; // Ebooks use direct downloads, not torrents/NZBs
+    const keepCollectionSource = downloadHistory
+      ? await isProtectedCollectionSource(downloadHistory)
+      : false;
+    const skipTorrentHandling = isEbook || keepCollectionSource;
+    if (keepCollectionSource) {
+      logger.info(`Keeping collection source for request ${requestId}`);
+      torrentsKeptUnlimited++;
+    }
 
     if (!skipTorrentHandling && downloadHistory && downloadHistory.indexerName) {
       try {
@@ -140,15 +148,27 @@ export async function deleteRequest(
             }
 
             if (downloadInfo) {
+              const protectedByTag = downloadInfo.tags?.includes('rmab-collection');
+              const removeDownload = async () => {
+                const removed = !protectedByTag
+                  && await removeUnprotectedSource(downloadHistory, () => client.deleteDownload(clientId, true));
+                if (removed) {
+                  torrentsRemoved++;
+                } else {
+                  logger.info(`Keeping protected collection source ${clientId}`);
+                  torrentsKeptUnlimited++;
+                }
+                return removed;
+              };
               const isUnlimitedSeeding = !seedingConfig || seedingConfig.seedingTimeMinutes === 0;
               const isCompleted = downloadHistory.downloadStatus === 'completed';
 
               if (client.protocol === 'usenet') {
                 // Usenet - no seeding concept, delete immediately
                 try {
-                  await client.deleteDownload(clientId, true);
-                  logger.info(`Deleted download ${clientId} from ${client.clientType}`);
-                  torrentsRemoved++;
+                  if (await removeDownload()) {
+                    logger.info(`Deleted download ${clientId} from ${client.clientType}`);
+                  }
                 } catch (error) {
                   logger.info(`Download ${clientId} not found in ${client.clientType}, skipping`);
                 }
@@ -161,8 +181,7 @@ export async function deleteRequest(
               } else if (!isCompleted) {
                 // Download not completed - delete immediately
                 logger.info(`Deleting incomplete download: ${downloadInfo.name}`);
-                await client.deleteDownload(clientId, true);
-                torrentsRemoved++;
+                await removeDownload();
               } else {
                 // Check if seeding requirement is met
                 const seedingTimeSeconds = seedingConfig.seedingTimeMinutes * 60;
@@ -175,8 +194,7 @@ export async function deleteRequest(
                       actualSeedingTime / 60
                     )}/${seedingConfig.seedingTimeMinutes} minutes)`
                   );
-                  await client.deleteDownload(clientId, true);
-                  torrentsRemoved++;
+                  await removeDownload();
                 } else {
                   const remainingMinutes = Math.ceil((seedingTimeSeconds - actualSeedingTime) / 60);
                   logger.info(

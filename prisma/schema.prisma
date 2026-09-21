@@ -236,6 +236,11 @@ model Request {
   maxImportRetries Int       @default(5) @map("max_import_retries")
   ebookAutoRetryCount Int?   @map("ebook_auto_retry_count")
   lastSearchAt     DateTime? @map("last_search_at")
+  nextSearchAt     DateTime? @map("next_search_at")
+  consecutiveNoMatch Int     @default(0) @map("consecutive_no_match")
+  lastSearchOutcome String?  @map("last_search_outcome")
+  activeSearchJobId String?  @map("active_search_job_id")
+  activeDownloadJobId String? @map("active_download_job_id")
   customSearchTerms String?  @map("custom_search_terms") @db.Text
   lastImportAt     DateTime? @map("last_import_at")
   createdAt        DateTime  @default(now()) @map("created_at")
@@ -268,6 +273,7 @@ model Request {
   @@index([deletedAt])
   @@index([type])
   @@index([parentRequestId])
+  @@index([status, nextSearchAt, lastSearchAt])
   @@map("requests")
 }
 
@@ -328,6 +334,7 @@ model DownloadHistory {
   // Status values: queued, downloading, completed, failed, stalled
   downloadError    String?   @map("download_error") @db.Text
   downloadPath     String?   @map("download_path") @db.Text
+  collectionSelection Json? @map("collection_selection")
   startedAt        DateTime? @map("started_at")
   completedAt      DateTime? @map("completed_at")
   createdAt        DateTime  @default(now()) @map("created_at")

@@ -17,14 +17,19 @@ import { fixEpubForKindle, cleanupFixedEpub } from '../utils/epub-fixer';
 import { removeEmptyParentDirectories } from '../utils/cleanup-helpers';
 import { getAudibleService } from '../integrations/audible.service';
 import { addAutoBlock } from '../services/blocklist.service';
+import { recordWrongFormatImport } from '../utils/import-format-failure';
+import { readCollectionSelection } from '../collections/validation';
+import type { CollectionSelection } from '../collections/types';
+import { sameCollectionSelection } from '../utils/collection-import';
 
 /**
  * Process organize files job
  * Moves completed downloads to media library in proper directory structure
  * Handles both audiobook and ebook request types with appropriate branching
  */
-export async function processOrganizeFiles(payload: OrganizeFilesPayload): Promise<any> {
-  const { requestId, audiobookId, downloadPath, jobId, cleanupSource, selectedFiles } = payload;
+export async function processOrganizeFiles(payload: OrganizeFilesPayload & { collectionSelection?: CollectionSelection }): Promise<any> {
+  const { requestId, audiobookId, jobId, cleanupSource, selectedFiles } = payload;
+  let { downloadPath } = payload;
 
   const logger = RMABLogger.forJob(jobId, 'OrganizeFiles');
 
@@ -44,6 +49,12 @@ export async function processOrganizeFiles(payload: OrganizeFilesPayload): Promi
       throw new Error(`Request ${requestId} not found`);
     }
 
+    // A queued retry must not revive a completed, cancelled, or cooled format failure.
+    if (request.deletedAt || !['downloading', 'processing', 'awaiting_import', 'warn'].includes(request.status)) {
+      logger.info(`Skipping stale organize job for request in ${request.status} state`);
+      return { success: false, skipped: true, reason: 'stale_import', requestId };
+    }
+
     const requestType = request.type || 'audiobook'; // Default to audiobook for backward compatibility
     logger.info(`Request type: ${requestType}`);
 
@@ -52,16 +63,30 @@ export async function processOrganizeFiles(payload: OrganizeFilesPayload): Promi
       return await processEbookOrganization(payload, request, logger);
     }
 
-    // Continue with audiobook organization flow
-    // Update request status to processing
-    await prisma.request.update({
-      where: { id: requestId },
+    // Persisted collection selections remain authoritative on manual/scheduled retries.
+    const selectedDownload = await prisma.downloadHistory.findFirst({
+      where: { requestId, selected: true }, orderBy: { createdAt: 'desc' },
+    });
+    const storedSelection = readCollectionSelection((selectedDownload as { collectionSelection?: unknown } | null)?.collectionSelection);
+    const collectionSelection = readCollectionSelection(payload.collectionSelection) || storedSelection;
+    if (collectionSelection) {
+      if (!storedSelection || !sameCollectionSelection(collectionSelection, storedSelection)) {
+        logger.warn('Skipping stale collection manifest that no longer matches the selected download');
+        return { success: false, skipped: true, reason: 'stale_import', requestId };
+      }
+      if (!selectedDownload?.downloadPath) throw new Error('Collection import save root is missing from download history');
+      downloadPath = selectedDownload.downloadPath;
+    }
+
+    const claim = await prisma.request.updateMany({
+      where: { id: requestId, status: request.status, deletedAt: null },
       data: {
         status: 'processing',
-        progress: 100, // Download is complete, now organizing
+        progress: 100,
         updatedAt: new Date(),
       },
     });
+    if (!claim.count) return { success: false, skipped: true, reason: 'stale_import', requestId };
 
     // Get audiobook details
     const audiobook = await prisma.audiobook.findUnique({
@@ -214,8 +239,14 @@ export async function processOrganizeFiles(payload: OrganizeFilesPayload): Promi
       template,
       jobId ? { jobId, context: 'FileOrganizer' } : undefined,
       renameConfig,
-      selectedFiles
+      selectedFiles,
+      collectionSelection || undefined,
     );
+
+    if (result.failureKind === 'wrong_format') {
+      const policy = request as typeof request & { consecutiveNoMatch?: number };
+      return await recordWrongFormatImport(requestId, policy.consecutiveNoMatch || 0, result.bundledEbooks, jobId, logger);
+    }
 
     if (!result.success) {
       throw new Error(`File organization failed: ${result.errors.join(', ')}`);
@@ -266,6 +297,8 @@ export async function processOrganizeFiles(payload: OrganizeFilesPayload): Promi
       data: {
         status: 'downloaded',
         progress: 100,
+        errorMessage: null,
+        importAttempts: 0,
         completedAt: new Date(),
         updatedAt: new Date(),
       },
@@ -338,12 +371,13 @@ export async function processOrganizeFiles(payload: OrganizeFilesPayload): Promi
       );
     }
 
-    // Cleanup downloads if configured (uses IDownloadClient.postProcess for client-specific cleanup)
-    await cleanupDownloadAfterOrganize(requestId, downloadPath, configService, jobId, logger);
-
-    // Cleanup source files if requested (manual import feature)
-    if (cleanupSource) {
-      await cleanupSourceAfterOrganize(downloadPath, configService, jobId, logger, selectedFiles);
+    // Bundled books and collection packs remain independent seeding/review sources.
+    // In particular, a collection downloadPath is a shared save root, never a cleanup target.
+    if (collectionSelection || result.bundledEbooks?.preserveSource) {
+      logger.info('Source cleanup suppressed: collection or bundled ebooks must be retained');
+    } else {
+      await cleanupDownloadAfterOrganize(requestId, downloadPath, configService, jobId, logger);
+      if (cleanupSource) await cleanupSourceAfterOrganize(downloadPath, configService, jobId, logger, selectedFiles);
     }
 
     return {
@@ -356,6 +390,9 @@ export async function processOrganizeFiles(payload: OrganizeFilesPayload): Promi
       audioFiles: result.audioFiles,
       coverArt: result.coverArtFile,
       errors: result.errors,
+      bundledEbooks: result.bundledEbooks,
+      intendedAudioCount: result.intendedAudioCount,
+      accountedAudioCount: result.accountedAudioCount,
     };
   } catch (error) {
     logger.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -364,13 +401,20 @@ export async function processOrganizeFiles(payload: OrganizeFilesPayload): Promi
 
     // Check if this is a retryable error (transient filesystem issues or no files found)
     // These errors may resolve on retry (e.g., files still being extracted, permissions being set)
-    const isRetryableError =
+    const isRetryableError = !errorMessage.includes('Import conflict:') && (
+      errorMessage.includes('Partial audio import') ||
+      errorMessage.includes('Missing selected audio files') ||
+      errorMessage.includes('Incomplete selected collection file') ||
+      errorMessage.includes('EIO') ||
+      errorMessage.includes('ENOSPC') ||
+      errorMessage.includes('EBUSY') ||
+      errorMessage.includes('ESTALE') ||
       errorMessage.includes('No audiobook files found') ||
       errorMessage.includes('No ebook files found') ||  // Ebook equivalent of above
       errorMessage.includes('ENOENT') || // File/directory not found
       errorMessage.includes('no such file or directory') ||
       errorMessage.includes('EACCES') || // Permission denied (might be temporary)
-      errorMessage.includes('EPERM');    // Operation not permitted (might be temporary)
+      errorMessage.includes('EPERM'));    // Operation not permitted (might be temporary)
 
     if (isRetryableError) {
       // Get current request to check retry count
@@ -399,7 +443,8 @@ export async function processOrganizeFiles(payload: OrganizeFilesPayload): Promi
             orderBy: { createdAt: 'desc' },
           });
 
-          if (downloadHistory?.downloadClientId && downloadHistory?.downloadClient && downloadHistory.downloadClient !== 'direct') {
+          const savedCollection = (downloadHistory as { collectionSelection?: unknown } | null)?.collectionSelection;
+          if (!savedCollection && downloadHistory?.downloadClientId && downloadHistory?.downloadClient && downloadHistory.downloadClient !== 'direct') {
             const configService = getConfigService();
             const dlManager = getDownloadClientManager(configService);
             const dlProtocol = CLIENT_PROTOCOL_MAP[downloadHistory.downloadClient as DownloadClientType];

@@ -10,6 +10,10 @@ import { TorrentResult } from '../utils/ranking-algorithm';
 import { DownloadClientType } from '../interfaces/download-client.interface';
 import { RMABLogger } from '../utils/logger';
 import type { NotificationEvent } from '@/lib/constants/notification-events';
+import type { CollectionSelection } from '../collections/types';
+import { enqueueSearch, type SearchEnqueueOptions } from '../utils/search-enqueue';
+import { observeRssReleases } from '../utils/rss-freshness';
+import { providerFailurePolicy } from '../utils/search-policy';
 
 const logger = RMABLogger.create('JobQueue');
 
@@ -80,6 +84,7 @@ export interface OrganizeFilesPayload extends JobPayload {
   targetPath?: string; // Optional - not used by processor (reads from database config)
   cleanupSource?: boolean; // If true, delete source files after successful import
   selectedFiles?: string[]; // If set, only import these specific files from downloadPath
+  collectionSelection?: CollectionSelection; // Exact qBittorrent paths relative to save_path
 }
 
 export interface ScanPlexPayload extends JobPayload {
@@ -239,7 +244,7 @@ export class JobQueueService {
   private setupEventHandlers(): void {
     this.queue.on('completed', async (job: BullJob, result: any) => {
       logger.info(`Job ${job.id} completed`, { result });
-      await this.updateJobInDatabase(job.id as string, 'completed', result);
+      await this.updateJobInDatabase(job.id as string, 'completed', result, undefined, undefined, job.data?.jobId);
     });
 
     this.queue.on('failed', async (job: BullJob, error: Error) => {
@@ -249,71 +254,68 @@ export class JobQueueService {
         'failed',
         null,
         error.message,
-        error.stack
+        error.stack,
+        job.data?.jobId
       );
 
-      // Handle permanent failures for specific job types after all retries exhausted
-      if (job.name === 'monitor_download' && job.data) {
-        const payload = job.data as MonitorDownloadPayload;
-        logger.error(`MonitorDownload job permanently failed for request ${payload.requestId} after ${job.attemptsMade} attempts`);
-
-        // Update request status to failed (only happens after all retries exhausted)
-        try {
-          await prisma.request.update({
-            where: { id: payload.requestId },
-            data: {
-              status: 'failed',
-              errorMessage: error.message || 'Failed to monitor download after multiple retries',
-              updatedAt: new Date(),
-            },
+      const exhausted = job.attemptsMade >= (job.opts?.attempts || 3);
+      try {
+        if (exhausted && ['search_indexers', 'search_ebook'].includes(job.name) && job.data?.jobId) {
+          await prisma.request.updateMany({
+            where: { id: job.data.requestId, status: 'searching', activeSearchJobId: job.data.jobId, deletedAt: null },
+            data: { status: 'awaiting_search', activeSearchJobId: null, errorMessage: 'Search job failed. Will retry automatically.', ...providerFailurePolicy(error) },
           });
+        }
 
-          // Update download history
-          if (payload.downloadHistoryId) {
-            await prisma.downloadHistory.update({
-              where: { id: payload.downloadHistoryId },
-              data: {
-                downloadStatus: 'failed',
-                downloadError: error.message || 'Failed to monitor download',
+        // A stale monitor cannot fail a newer selected release or a collection.
+        if (exhausted && job.name === 'monitor_download' && job.data) {
+          const payload = job.data as MonitorDownloadPayload;
+          const selected = await prisma.downloadHistory.findFirst({
+            where: { requestId: payload.requestId, selected: true },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            select: { id: true, createdAt: true },
+          });
+          if (!selected || selected.id !== payload.downloadHistoryId) return;
+          const changed = await prisma.request.updateMany({
+            where: {
+              id: payload.requestId, status: 'downloading', deletedAt: null,
+              downloadHistory: {
+                some: { id: selected.id, selected: true },
+                none: { selected: true, OR: [
+                  { createdAt: { gt: selected.createdAt } },
+                  { createdAt: selected.createdAt, id: { gt: selected.id } },
+                ] },
               },
-            });
-          }
-        } catch (updateError) {
-          logger.error('Failed to update request/download status', { error: updateError instanceof Error ? updateError.message : String(updateError) });
-        }
-      }
-
-      // Safety net for download_torrent: if the processor skipped marking the
-      // request as failed (e.g. connection error with Bull retries), ensure the
-      // request is marked failed after all retries are exhausted.
-      if (job.name === 'download_torrent' && job.data) {
-        const payload = job.data as DownloadTorrentPayload;
-        logger.error(`DownloadTorrent job permanently failed for request ${payload.requestId} after ${job.attemptsMade} attempts`);
-
-        try {
-          await prisma.request.update({
-            where: { id: payload.requestId },
-            data: {
-              status: 'failed',
-              errorMessage: error.message || 'Failed to add download after multiple retries',
-              updatedAt: new Date(),
             },
+            data: { status: 'failed', errorMessage: 'Download monitoring failed after all attempts' },
           });
-        } catch (updateError) {
-          logger.error('Failed to update request status after download_torrent failure', {
-            error: updateError instanceof Error ? updateError.message : String(updateError),
+          if (changed.count) await prisma.downloadHistory.updateMany({
+            where: { id: selected.id, requestId: payload.requestId, selected: true },
+            data: { downloadStatus: 'failed', downloadError: 'Download monitoring failed after all attempts' },
           });
         }
+
+        // Pre-history download jobs need an explicit processor claim. No title or
+        // latest-history guess is safe when a collection can take ownership.
+        if (exhausted && job.name === 'download_torrent' && job.data?.jobId) {
+          const payload = job.data as DownloadTorrentPayload;
+          await prisma.request.updateMany({
+            where: { id: payload.requestId, status: 'downloading', deletedAt: null, activeDownloadJobId: payload.jobId },
+            data: { status: 'failed', activeDownloadJobId: null, errorMessage: 'Download could not start after all attempts' },
+          });
+        }
+      } catch {
+        logger.error('Failed to update terminal job ownership status');
       }
     });
 
     this.queue.on('stalled', async (job: BullJob) => {
       logger.warn(`Job ${job.id} stalled`);
-      await this.updateJobInDatabase(job.id as string, 'stuck');
+      await this.updateJobInDatabase(job.id as string, 'stuck', undefined, undefined, undefined, job.data?.jobId);
     });
 
     this.queue.on('active', async (job: BullJob) => {
-      await this.updateJobInDatabase(job.id as string, 'active');
+      await this.updateJobInDatabase(job.id as string, 'active', undefined, undefined, undefined, job.data?.jobId);
     });
 
     this.queue.on('error', (error: Error) => {
@@ -506,7 +508,8 @@ export class JobQueueService {
     status: string,
     result?: any,
     errorMessage?: string,
-    stackTrace?: string
+    stackTrace?: string,
+    databaseJobId?: string
   ): Promise<void> {
     try {
       const updateData: any = {
@@ -535,7 +538,7 @@ export class JobQueueService {
       }
 
       await prisma.job.updateMany({
-        where: { bullJobId },
+        where: databaseJobId ? { id: databaseJobId } : { bullJobId },
         data: updateData,
       });
     } catch (error) {
@@ -582,17 +585,16 @@ export class JobQueueService {
   /**
    * Add search indexers job
    */
-  async addSearchJob(requestId: string, audiobook: { id: string; title: string; author: string; asin?: string }): Promise<string> {
-    return await this.addJob(
-      'search_indexers',
-      {
-        requestId,
-        audiobook,
-      } as SearchIndexersPayload,
-      {
-        priority: 10, // High priority for user-initiated requests
-      }
-    );
+  async addSearchJob(
+    requestId: string,
+    audiobook: { id: string; title: string; author: string; asin?: string },
+    options?: SearchEnqueueOptions
+  ): Promise<string> {
+    return enqueueSearch(this.queue, this.redis, 'search_indexers', { requestId, audiobook }, options);
+  }
+
+  async observeRssReleases(results: TorrentResult[]): Promise<TorrentResult[]> {
+    return observeRssReleases(this.redis, results);
   }
 
   /**
@@ -661,7 +663,8 @@ export class JobQueueService {
     downloadPath: string,
     targetPath?: string,
     cleanupSource?: boolean,
-    selectedFiles?: string[]
+    selectedFiles?: string[],
+    collectionSelection?: CollectionSelection
   ): Promise<string> {
     return await this.addJob(
       'organize_files',
@@ -672,6 +675,7 @@ export class JobQueueService {
         targetPath, // Not used by processor
         cleanupSource,
         selectedFiles,
+        collectionSelection,
       } as OrganizeFilesPayload,
       {
         priority: 8,
@@ -869,19 +873,10 @@ export class JobQueueService {
   async addSearchEbookJob(
     requestId: string,
     audiobook: { id: string; title: string; author: string; asin?: string },
-    preferredFormat?: string
+    preferredFormat?: string,
+    options?: SearchEnqueueOptions
   ): Promise<string> {
-    return await this.addJob(
-      'search_ebook',
-      {
-        requestId,
-        audiobook,
-        preferredFormat,
-      } as SearchEbookPayload,
-      {
-        priority: 10, // High priority for user-initiated requests
-      }
-    );
+    return enqueueSearch(this.queue, this.redis, 'search_ebook', { requestId, audiobook, preferredFormat }, options);
   }
 
   /**
@@ -974,12 +969,12 @@ export class JobQueueService {
    */
   async getActiveJobs(): Promise<any[]> {
     const bullJobs = await this.queue.getActive();
-    const jobIds = bullJobs.map((j) => j.id as string);
-
+    const databaseIds = bullJobs.filter(j => j.data?.jobId).map(j => j.data.jobId as string);
+    const legacyIds = bullJobs.filter(j => !j.data?.jobId).map(j => j.id as string);
     return await prisma.job.findMany({
-      where: {
-        bullJobId: { in: jobIds },
-      },
+      where: databaseIds.length
+        ? { OR: [{ id: { in: databaseIds } }, { bullJobId: { in: legacyIds } }] }
+        : { bullJobId: { in: legacyIds } },
     });
   }
 
@@ -1006,6 +1001,13 @@ export class JobQueueService {
       throw new Error('Job not found');
     }
 
+    if (['search_indexers', 'search_ebook'].includes(job.type)) {
+      const payload = job.payload as unknown as SearchEbookPayload;
+      if (!payload?.requestId || !payload.audiobook) throw new Error('Search job has no request payload');
+      if (job.type === 'search_ebook') await this.addSearchEbookJob(payload.requestId, payload.audiobook, payload.preferredFormat, { trigger: 'manual' });
+      else await this.addSearchJob(payload.requestId, payload.audiobook, { trigger: 'manual' });
+      return;
+    }
     if (job.bullJobId) {
       const bullJob = await this.queue.getJob(job.bullJobId);
       if (bullJob) {
@@ -1038,7 +1040,7 @@ export class JobQueueService {
 
     if (job.bullJobId) {
       const bullJob = await this.queue.getJob(job.bullJobId);
-      if (bullJob) {
+      if (bullJob && (!['search_indexers', 'search_ebook'].includes(job.type) || bullJob.data?.jobId === job.id)) {
         await bullJob.remove();
       }
     }

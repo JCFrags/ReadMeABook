@@ -41,6 +41,11 @@ describe('processSearchEbook', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     configServiceMock.getAudibleRegion.mockResolvedValue('us');
+    prismaMock.request.findUnique.mockImplementation(async ({ where }: any) => ({
+      id: where.id, status: 'awaiting_search', deletedAt: null, consecutiveNoMatch: 0, activeSearchJobId: null,
+      audiobook: { title: where.id === 'req-2' ? 'Another Book' : 'Test Book', author: where.id === 'req-2' ? 'Another Author' : 'Test Author' },
+    }));
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
     configServiceMock.get.mockImplementation(async (key: string) => {
       if (key === 'ebook_sidecar_preferred_format') return 'epub';
       if (key === 'ebook_sidecar_base_url') return 'https://annas-archive.gl';
@@ -51,7 +56,7 @@ describe('processSearchEbook', () => {
   });
 
   it('searches by ASIN when available and triggers download', async () => {
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.downloadHistory.create.mockResolvedValue({ id: 'dh-1' });
     prismaMock.downloadHistory.update.mockResolvedValue({});
 
@@ -82,7 +87,8 @@ describe('processSearchEbook', () => {
       'https://annas-archive.gl',
       expect.anything(),
       undefined,
-      'en'
+      'en',
+      true
     );
     expect(jobQueueMock.addStartDirectDownloadJob).toHaveBeenCalledWith(
       'req-1',
@@ -94,7 +100,7 @@ describe('processSearchEbook', () => {
   });
 
   it('falls back to title search when ASIN search fails', async () => {
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.downloadHistory.create.mockResolvedValue({ id: 'dh-2' });
     prismaMock.downloadHistory.update.mockResolvedValue({});
 
@@ -127,12 +133,13 @@ describe('processSearchEbook', () => {
       'https://annas-archive.gl',
       expect.anything(),
       undefined,
-      'en'
+      'en',
+      true
     );
   });
 
   it('searches by title when no ASIN is available', async () => {
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.downloadHistory.create.mockResolvedValue({ id: 'dh-3' });
     prismaMock.downloadHistory.update.mockResolvedValue({});
 
@@ -160,7 +167,7 @@ describe('processSearchEbook', () => {
   });
 
   it('marks request as awaiting_search when no ebook found', async () => {
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
 
     ebookScraperMock.searchByAsin.mockResolvedValue(null);
     ebookScraperMock.searchByTitle.mockResolvedValue(null);
@@ -180,8 +187,8 @@ describe('processSearchEbook', () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toContain('re-search');
-    expect(prismaMock.request.update).toHaveBeenCalledWith({
-      where: { id: 'req-4' },
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith({
+      where: { id: 'req-4', status: 'searching', deletedAt: null, activeSearchJobId: 'job-4' },
       data: expect.objectContaining({
         status: 'awaiting_search',
         errorMessage: expect.stringContaining('No ebook found'),
@@ -192,7 +199,7 @@ describe('processSearchEbook', () => {
   });
 
   it('marks request as awaiting_search when no download links available', async () => {
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
 
     ebookScraperMock.searchByAsin.mockResolvedValue('md5nolinks');
     ebookScraperMock.getSlowDownloadLinks.mockResolvedValue([]);
@@ -212,8 +219,8 @@ describe('processSearchEbook', () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toContain('re-search');
-    expect(prismaMock.request.update).toHaveBeenCalledWith({
-      where: { id: 'req-5' },
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith({
+      where: { id: 'req-5', status: 'searching', deletedAt: null, activeSearchJobId: 'job-5' },
       data: expect.objectContaining({
         status: 'awaiting_search',
         errorMessage: expect.stringContaining('No ebook found'),
@@ -223,7 +230,7 @@ describe('processSearchEbook', () => {
   });
 
   it('uses FlareSolverr when configured', async () => {
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.downloadHistory.create.mockResolvedValue({ id: 'dh-6' });
     prismaMock.downloadHistory.update.mockResolvedValue({});
 
@@ -258,18 +265,19 @@ describe('processSearchEbook', () => {
       'https://annas-archive.gl',
       expect.anything(),
       'http://flaresolverr:8191',
-      'en'
+      'en',
+      true
     );
   });
 
-  it('fails request on unexpected errors', async () => {
-    prismaMock.request.update.mockResolvedValue({});
+  it('cools request without a no-match increment on provider errors', async () => {
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
 
     ebookScraperMock.searchByAsin.mockRejectedValue(new Error('Network error'));
 
     const { processSearchEbook } = await import('@/lib/processors/search-ebook.processor');
 
-    await expect(processSearchEbook({
+    const result = await processSearchEbook({
       requestId: 'req-7',
       audiobook: {
         id: 'ab-7',
@@ -278,19 +286,21 @@ describe('processSearchEbook', () => {
         asin: 'B007ASIN',
       },
       jobId: 'job-7',
-    })).rejects.toThrow('Network error');
+    });
+    expect(result.success).toBe(false);
 
-    expect(prismaMock.request.update).toHaveBeenCalledWith({
-      where: { id: 'req-7' },
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith({
+      where: { id: 'req-7', status: 'searching', deletedAt: null, activeSearchJobId: 'job-7' },
       data: expect.objectContaining({
-        status: 'failed',
-        errorMessage: 'Network error',
+        status: 'awaiting_search',
+        lastSearchOutcome: 'provider_error',
+        nextSearchAt: expect.any(Date),
       }),
     });
   });
 
   it('creates download history with correct metadata', async () => {
-    prismaMock.request.update.mockResolvedValue({});
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.downloadHistory.create.mockResolvedValue({ id: 'dh-8' });
     prismaMock.downloadHistory.update.mockResolvedValue({});
 

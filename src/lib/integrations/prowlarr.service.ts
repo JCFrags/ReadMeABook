@@ -9,6 +9,8 @@ import { XMLParser } from 'fast-xml-parser';
 import { DOWNLOAD_CLIENT_TIMEOUT } from '../constants/download-timeouts';
 import { TorrentResult } from '../utils/ranking-algorithm';
 import { RMABLogger } from '../utils/logger';
+import { buildDiscoveryQueries, type DiscoveryMetadata } from '../utils/search-discovery';
+import { asSearchProviderError, SearchProviderError } from '../utils/search-policy';
 
 // Module-level logger
 const logger = RMABLogger.create('Prowlarr');
@@ -110,7 +112,7 @@ export class ProwlarrService {
 
     // Debug interceptor to log actual outgoing requests
     this.client.interceptors.request.use((config) => {
-      logger.debug(`Actual request: ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`, { params: config.params });
+      logger.debug(`Prowlarr request: ${config.method?.toUpperCase()} ${config.url}`);
       return config;
     });
   }
@@ -165,10 +167,6 @@ export class ProwlarrService {
         logger.info(`Raw protocol distribution`, { protocols: rawProtocols });
       }
 
-      // Debug: Log first raw result full structure (automatically filtered by LOG_LEVEL)
-      if (response.data.length > 0) {
-        logger.debug('Sample raw result from API', response.data[0]);
-      }
 
       // Transform Prowlarr results to our format
       const results = response.data
@@ -176,7 +174,7 @@ export class ProwlarrService {
           const transformed = this.transformResult(result);
           if (!transformed) {
             // Log the full raw result that was skipped (automatically filtered by LOG_LEVEL)
-            logger.debug(`Result #${index + 1} was skipped`, { rawData: result });
+            logger.debug(`Result #${index + 1} was skipped (missing download metadata)`);
           }
           return transformed;
         })
@@ -204,26 +202,24 @@ export class ProwlarrService {
 
       return filtered;
     } catch (error) {
-      logger.error('Search failed', { error: error instanceof Error ? error.message : String(error) });
-      throw new Error(
-        `Failed to search Prowlarr: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
+      const providerError = asSearchProviderError(error);
+      logger.warn(providerError.message);
+      throw providerError;
     }
   }
 
   /**
    * Search with multiple query variations to increase coverage
-   * Fires 2 queries per call: "title author" and "title", then deduplicates by guid
+   * Uses at most four discovery queries. Ranking must retain canonical metadata.
    */
   async searchWithVariations(
     title: string,
     author: string,
-    filters?: SearchFilters
+    filters?: SearchFilters,
+    metadata?: DiscoveryMetadata
   ): Promise<TorrentResult[]> {
-    const queries = [
-      `${title} ${author}`,
-      title,
-    ];
+    const queries = buildDiscoveryQueries(title, author, metadata);
+    let failure: SearchProviderError | undefined;
 
     logger.info(`Searching with ${queries.length} query variations`, { queries });
 
@@ -235,11 +231,15 @@ export class ProwlarrService {
         logger.info(`Query "${query}" returned ${results.length} results`);
         allResults.push(...results);
       } catch (error) {
-        logger.error(`Query "${query}" failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        // Continue with other queries even if one fails
+        const providerError = asSearchProviderError(error);
+        if (!failure || providerError.retryDelayMs > failure.retryDelayMs) failure = providerError;
+        logger.warn(`Discovery query failed: ${providerError.message}`);
+        if (providerError.status === 429) break;
       }
     }
 
+    // A failed query is not evidence that the requested book is absent.
+    if (failure) throw failure;
     const deduplicated = this.deduplicateResults(allResults);
     logger.info(`Multi-query search: ${allResults.length} total → ${deduplicated.length} after dedup (${allResults.length - deduplicated.length} duplicates removed)`);
 
@@ -252,10 +252,9 @@ export class ProwlarrService {
   private deduplicateResults(results: TorrentResult[]): TorrentResult[] {
     const seen = new Set<string>();
     return results.filter(result => {
-      if (seen.has(result.guid)) {
-        return false;
-      }
-      seen.add(result.guid);
+      const key = `${result.indexerId ?? result.indexer}:${result.infoHash || result.guid || result.title}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
   }
@@ -304,7 +303,8 @@ export class ProwlarrService {
    * Returns recent releases from the indexer's RSS feed
    * Uses true RSS feed endpoint to avoid burdening indexers with searches
    */
-  async getRssFeed(indexerId: number): Promise<TorrentResult[]> {
+  async getRssFeed(indexerId: number, categories: number[] = [this.defaultCategory]): Promise<TorrentResult[]> {
+    if (categories.length === 0) return [];
     try {
       // Prowlarr RSS endpoint: /{indexerId}/api?apikey={key}&t=search&cat=3030
       const rssUrl = `${this.baseUrl}/${indexerId}/api`;
@@ -313,7 +313,7 @@ export class ProwlarrService {
         params: {
           apikey: this.apiKey,
           t: 'search',
-          cat: this.defaultCategory.toString(),
+          cat: [...new Set(categories)].sort((a, b) => a - b).join(','),
           limit: 100,
           extended: 1,
         },
@@ -332,6 +332,7 @@ export class ProwlarrService {
       });
 
       const parsed = parser.parse(response.data);
+      if (parsed?.error || !parsed?.rss?.channel) throw new SearchProviderError();
 
       // Extract items from RSS feed
       const items = parsed?.rss?.channel?.item || [];
@@ -374,11 +375,11 @@ export class ProwlarrService {
             size: parseInt(item.size || '0', 10),
             seeders,
             leechers,
-            publishDate: item.pubDate ? new Date(item.pubDate) : new Date(),
+            publishDate: item.pubDate ? new Date(item.pubDate) : new Date(0),
             downloadUrl: downloadUrl.trim(),
             infoUrl: item.comments || undefined,  // RSS feeds often have comments field with info URL
             infoHash: getAttr('infohash'),
-            guid: item.guid || '',
+            guid: typeof item.guid === 'string' ? item.guid : item.guid?.['#text'] || '',
             format: metadata.format,
             bitrate: metadata.bitrate,
             hasChapters: metadata.hasChapters,
@@ -395,20 +396,22 @@ export class ProwlarrService {
 
       return results;
     } catch (error) {
-      logger.error(`Failed to get RSS feed for indexer ${indexerId}`, { error: error instanceof Error ? error.message : String(error) });
-      throw new Error(`Failed to get RSS feed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      const providerError = asSearchProviderError(error);
+      logger.warn(`RSS feed failed for indexer ${indexerId}: ${providerError.message}`);
+      throw providerError;
     }
   }
 
   /**
    * Get RSS feeds from all enabled indexers
    */
-  async getAllRssFeeds(indexerIds: number[]): Promise<TorrentResult[]> {
+  async getAllRssFeeds(indexerIds: Array<number | { indexerId: number; categories: number[] }>): Promise<TorrentResult[]> {
     const allResults: TorrentResult[] = [];
 
-    for (const indexerId of indexerIds) {
+    for (const indexer of indexerIds) {
+      const indexerId = typeof indexer === 'number' ? indexer : indexer.indexerId;
       try {
-        const results = await this.getRssFeed(indexerId);
+        const results = await this.getRssFeed(indexerId, typeof indexer === 'number' ? undefined : indexer.categories);
         allResults.push(...results);
       } catch (error) {
         logger.error(`Failed to get RSS feed for indexer ${indexerId}`, { error: error instanceof Error ? error.message : String(error) });
@@ -448,7 +451,7 @@ export class ProwlarrService {
       // Debug: Log first few results to see their protocols
       if (results.length > 0 && results.length <= 5) {
         results.forEach((r, i) => {
-          logger.info(` Result ${i + 1}: protocol="${r.protocol || 'undefined'}", url="${r.downloadUrl.substring(0, 80)}..."`);
+          logger.info(` Result ${i + 1}: protocol="${r.protocol || 'undefined'}"`);
         });
       } else if (results.length > 5) {
         logger.info(` First 3 results:`);

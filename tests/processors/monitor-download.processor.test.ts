@@ -52,6 +52,44 @@ describe('processMonitorDownload', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     jobQueueMock.addNotificationJob.mockResolvedValue(undefined);
+    prismaMock.request.findFirst.mockImplementation(async ({ where }: any) => ({ id: where.id, status: 'downloading', deletedAt: null, audiobook: { id: 'a1' } }));
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.downloadHistory.findFirst.mockImplementation(async ({ where }: any) => ({ id: where.requestId.replace(/^req/, 'dh'), requestId: where.requestId }));
+  });
+
+  it('ignores deleted requests and monitors for an older selected download', async () => {
+    const { processMonitorDownload } = await import('@/lib/processors/monitor-download.processor');
+    const payload = { requestId: 'req-1', downloadHistoryId: 'dh-old', downloadClientId: 'hash-1', downloadClient: 'qbittorrent' as const };
+    expect((await processMonitorDownload(payload)).skipped).toBe(true);
+    prismaMock.request.findFirst.mockResolvedValue(null);
+    expect((await processMonitorDownload({ ...payload, downloadHistoryId: 'dh-1' })).skipped).toBe(true);
+    expect(downloadClientManagerMock.getClientServiceForProtocol).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('hands off only the exact collection manifest, relocation still pending=%s', async (relocating) => {
+    const hash = 'a'.repeat(40);
+    const manifest = { version: 1, batchId: 'collection-one', infoHash: hash,
+      files: [{ index: 0, path: 'Pack/One/audio.mp3', size: 10, kind: 'audio' }] };
+    prismaMock.downloadHistory.findFirst.mockResolvedValue({ id: 'dh-collection', requestId: 'req-collection', collectionSelection: manifest });
+    downloadClientManagerMock.getClientServiceForProtocol.mockResolvedValue({
+      clientType: 'qbittorrent', protocol: 'torrent',
+      getDownload: vi.fn(async () => ({ progress: 0.25, status: 'downloading', downloadSpeed: 1, eta: 20,
+        downloadPath: relocating ? '/remote/temp/Pack' : '/remote/done/Pack', savePath: '/remote/done' })),
+      getTorrent: vi.fn(async () => ({ hash, state: 'downloading' })),
+      getFiles: vi.fn(async () => [{ index: 0, name: 'Pack/One/audio.mp3', size: 10, priority: 1, progress: 1 }]),
+    });
+    downloadClientManagerMock.getClientForProtocol.mockResolvedValue({ remotePathMappingEnabled: true, remotePath: '/remote', localPath: '/downloads' });
+    const { processMonitorDownload } = await import('@/lib/processors/monitor-download.processor');
+    const result = await processMonitorDownload({ requestId: 'req-collection', downloadHistoryId: 'dh-collection', downloadClientId: hash,
+      downloadClient: 'qbittorrent', pathWaitCount: 40 });
+    if (relocating) {
+      expect(result.completed).toBe(false);
+      expect(jobQueueMock.addOrganizeJob).not.toHaveBeenCalled();
+      expect(jobQueueMock.addMonitorJob).toHaveBeenCalledWith('req-collection', 'dh-collection', hash, 'qbittorrent', 300, 100, 0, 41);
+    } else {
+      expect(result.completed).toBe(true);
+      expect(jobQueueMock.addOrganizeJob).toHaveBeenCalledWith('req-collection', 'a1', '/downloads/done', undefined, false, undefined, manifest);
+    }
   });
 
   it('queues organize job when qBittorrent download completes', async () => {
@@ -85,6 +123,7 @@ describe('processMonitorDownload', () => {
     prismaMock.downloadHistory.update.mockResolvedValue({});
     prismaMock.request.findFirst.mockResolvedValue({
       id: 'req-1',
+      status: 'downloading',
       audiobook: { id: 'a1' },
       deletedAt: null,
     });
@@ -205,7 +244,7 @@ describe('processMonitorDownload', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(prismaMock.request.update).toHaveBeenCalledWith(
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'failed' }),
       })
@@ -257,7 +296,7 @@ describe('processMonitorDownload', () => {
       connectionFailureCount: 30,
     })).rejects.toThrow();
 
-    expect(prismaMock.request.update).toHaveBeenCalledWith(
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'failed' }),
       })
@@ -295,6 +334,7 @@ describe('processMonitorDownload', () => {
     prismaMock.downloadHistory.update.mockResolvedValue({});
     prismaMock.request.findFirst.mockResolvedValue({
       id: 'req-4',
+      status: 'downloading',
       audiobook: { id: 'a4' },
       deletedAt: null,
     });
@@ -354,6 +394,7 @@ describe('processMonitorDownload', () => {
     prismaMock.downloadHistory.update.mockResolvedValue({});
     prismaMock.request.findFirst.mockResolvedValue({
       id: 'req-nzbget',
+      status: 'downloading',
       audiobook: { id: 'a-nzbget' },
       deletedAt: null,
     });
@@ -415,7 +456,7 @@ describe('processMonitorDownload', () => {
       jobId: 'job-6',
     })).rejects.toThrow(/Unknown download client type: rtorrent/);
 
-    expect(prismaMock.request.update).toHaveBeenCalledWith(
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'failed' }),
       })
@@ -464,7 +505,7 @@ describe('processMonitorDownload', () => {
       jobId: 'job-7',
     })).rejects.toThrow(/Download path not available/i);
 
-    expect(prismaMock.request.update).toHaveBeenCalledWith(
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'failed' }),
       })
@@ -511,6 +552,7 @@ describe('processMonitorDownload', () => {
     prismaMock.downloadHistory.update.mockResolvedValue({});
     prismaMock.request.findFirst.mockResolvedValue({
       id: 'req-reloc',
+      status: 'downloading',
       audiobook: { id: 'a-reloc' },
       deletedAt: null,
     });
@@ -716,9 +758,9 @@ describe('processMonitorDownload', () => {
     expect(result.progress).toBe(35); // Should be converted to 35 (not 0.35)
 
     // Verify database was updated with correct percentage (0-100, not 0.0-1.0)
-    expect(prismaMock.request.update).toHaveBeenCalledWith(
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'req-8' },
+        where: expect.objectContaining({ id: 'req-8' }),
         data: expect.objectContaining({
           progress: 35, // Should be 35, not 0.35
         }),

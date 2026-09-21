@@ -80,6 +80,19 @@ vi.mock('fs/promises', () => ({
 }));
 
 vi.mock('@/lib/utils/copy-file', () => copyFileMock);
+vi.mock('@/lib/utils/import-safety', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/utils/import-safety')>('@/lib/utils/import-safety');
+  return {
+    ...actual,
+    assertImportPath: vi.fn(),
+    ensureImportDirectory: vi.fn(async (_root: string, target: string, mode: number) => fsMock.mkdir(target, { recursive: true, mode })),
+    copyVerifiedImport: vi.fn(async (source: string, destination: string) => {
+      try { await fsMock.access(destination); return false; } catch { /* Missing target. */ }
+      await copyFileMock.copyFile(source, destination);
+      return true;
+    }),
+  };
+});
 
 vi.mock('axios', () => ({
   default: axiosMock,
@@ -170,6 +183,7 @@ describe('file organizer', () => {
     chapterMock.checkDiskSpace.mockResolvedValue(1000);
     chapterMock.analyzeChapterFiles.mockResolvedValue([
       { path: '/downloads/book/disc1.mp3', filename: 'disc1.mp3', duration: 1000, chapterTitle: 'One' },
+      { path: '/downloads/book/disc2.mp3', filename: 'disc2.mp3', duration: 1000, chapterTitle: 'Two' },
     ]);
     chapterMock.mergeChapters.mockResolvedValue({ success: false, error: 'merge failed' });
 
@@ -445,14 +459,14 @@ describe('file organizer', () => {
     fsMock.readdir.mockImplementation(async (dir: string) => {
       if (dir === '/downloads') {
         return [
-          { name: 'disc1.mp3', isDirectory: () => false },
-          { name: 'sub', isDirectory: () => true },
+          { name: 'disc1.mp3', isDirectory: () => false, isSymbolicLink: () => false },
+          { name: 'sub', isDirectory: () => true, isSymbolicLink: () => false },
         ];
       }
       if (dir === subDir) {
         return [
-          { name: 'disc2.mp3', isDirectory: () => false },
-          { name: 'cover.jpg', isDirectory: () => false },
+          { name: 'disc2.mp3', isDirectory: () => false, isSymbolicLink: () => false },
+          { name: 'cover.jpg', isDirectory: () => false, isSymbolicLink: () => false },
         ];
       }
       return [];
@@ -654,13 +668,11 @@ describe('file organizer', () => {
     await expect((organizer as any).findAudiobookFiles('/downloads/bad')).rejects.toThrow('bad path');
   });
 
-  it('returns an empty list when walkDirectory fails', async () => {
+  it('does not hide an unreadable subdirectory as a complete inventory', async () => {
     fsMock.readdir.mockRejectedValue(new Error('no perms'));
 
     const organizer = new FileOrganizer('/media', '/tmp');
-    const files = await (organizer as any).walkDirectory('/downloads');
-
-    expect(files).toEqual([]);
+    await expect((organizer as any).walkDirectory('/downloads')).rejects.toThrow('no perms');
   });
 
   it('cleans up download directories safely', async () => {
@@ -842,7 +854,7 @@ describe('file organizer', () => {
     expect(fsMock.unlink).toHaveBeenCalledWith(taggedPath);
   });
 
-  it('reports partial success when some files copy and others fail', async () => {
+  it('reports failure when any intended audio file fails to copy', async () => {
     configState.values.set('metadata_tagging_enabled', 'false');
 
     const organizer = new FileOrganizer('/media', '/tmp');
@@ -876,8 +888,10 @@ describe('file organizer', () => {
       author: 'Author',
     }, '{author}/{title}');
 
-    // Should succeed because at least one file was copied
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
+    expect(result.failureKind).toBe('partial_import');
+    expect(result.intendedAudioCount).toBe(2);
+    expect(result.accountedAudioCount).toBe(1);
     expect(result.audioFiles).toEqual([path.join(expectedDir, 'disc1.mp3')]);
     expect(result.filesMovedCount).toBe(1);
     expect(result.errors.join(' ')).toContain('Failed to copy disc2.mp3');

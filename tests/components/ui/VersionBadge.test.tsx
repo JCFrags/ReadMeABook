@@ -37,7 +37,8 @@ describe('VersionBadge', () => {
 
     render(<VersionBadge />);
 
-    expect(await screen.findByText('v1.0.0')).toBeInTheDocument();
+    expect(await screen.findByText('v1.0.0 · Fork source')).toBeInTheDocument();
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://github.com/JCFrags/ReadMeABook/tree/abcdef1');
     // Should not call /api/version since build-time version is available
     expect(fetchMock).not.toHaveBeenCalledWith('/api/version');
   });
@@ -51,7 +52,8 @@ describe('VersionBadge', () => {
 
     render(<VersionBadge />);
 
-    expect(await screen.findByText('v1.2.3')).toBeInTheDocument();
+    expect(await screen.findByText('v1.2.3 · Fork source')).toBeInTheDocument();
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://github.com/JCFrags/ReadMeABook/tree/abc1234');
     expect(fetchMock).toHaveBeenCalledWith('/api/version');
   });
 
@@ -64,7 +66,7 @@ describe('VersionBadge', () => {
     render(<VersionBadge />);
 
     await waitFor(() => {
-      expect(screen.getByText('vDEV')).toBeInTheDocument();
+      expect(screen.getByText('vDEV · Fork source')).toBeInTheDocument();
     });
     expect(errorMock).toHaveBeenCalledWith('Failed to fetch version:', expect.any(Error));
   });

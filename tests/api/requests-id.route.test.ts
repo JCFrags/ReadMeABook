@@ -243,7 +243,8 @@ describe('Request by ID API routes', () => {
           audibleAsin: 'ASIN-2',
         },
       });
-    prismaMock.request.update.mockResolvedValueOnce({
+    prismaMock.request.updateMany.mockResolvedValueOnce({ count: 1 });
+    prismaMock.request.findUnique.mockResolvedValueOnce({
       id: 'req-3',
       status: 'pending',
       audiobook: { id: 'ab-2' },
@@ -260,7 +261,7 @@ describe('Request by ID API routes', () => {
       title: 'Title',
       author: 'Author',
       asin: 'ASIN-2',
-    });
+    }, { trigger: 'manual' });
   });
 
   it('retries an import via qBittorrent download history', async () => {

@@ -36,6 +36,9 @@ describe('processRetryMissingTorrents', () => {
     vi.clearAllMocks();
     // Default: setting ON (default when absent)
     configMock.get.mockResolvedValue(null);
+    prismaMock.request.updateMany.mockResolvedValue({ count: 1 });
+    jobQueueMock.addSearchJob.mockResolvedValue('search-job');
+    jobQueueMock.addSearchEbookJob.mockResolvedValue('search-job');
   });
 
   it('queues search jobs for awaiting_search requests with no release date', async () => {
@@ -56,6 +59,7 @@ describe('processRetryMissingTorrents', () => {
     expect(prismaMock.request.findMany).toHaveBeenCalledWith({
       where: {
         deletedAt: null,
+        AND: [{ OR: [{ nextSearchAt: null }, { nextSearchAt: { lte: expect.any(Date) } }] }],
         OR: [
           { status: 'awaiting_search' },
           { status: 'awaiting_release', releaseDate: null },
@@ -72,9 +76,9 @@ describe('processRetryMissingTorrents', () => {
     });
     expect(jobQueueMock.addSearchJob).toHaveBeenCalledWith(
       'req-1',
-      expect.objectContaining({ id: 'a1', title: 'Book', author: 'Author' })
+      expect.objectContaining({ id: 'a1', title: 'Book', author: 'Author' }), { trigger: 'retry' }
     );
-    expect(prismaMock.request.update).not.toHaveBeenCalled();
+    expect(prismaMock.request.updateMany).not.toHaveBeenCalled();
   });
 
   it('transitions awaiting_search → awaiting_release when book is unreleased and setting ON', async () => {
@@ -93,8 +97,8 @@ describe('processRetryMissingTorrents', () => {
     const result = await processRetryMissingTorrents({ jobId: 'job-2' });
 
     expect(result.success).toBe(true);
-    expect(prismaMock.request.update).toHaveBeenCalledWith({
-      where: { id: 'req-2' },
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith({
+      where: { id: 'req-2', status: 'awaiting_search', deletedAt: null },
       data: { status: 'awaiting_release' },
     });
     expect(jobQueueMock.addSearchJob).not.toHaveBeenCalled();
@@ -119,13 +123,13 @@ describe('processRetryMissingTorrents', () => {
     const result = await processRetryMissingTorrents({ jobId: 'job-3' });
 
     expect(result.success).toBe(true);
-    expect(prismaMock.request.update).toHaveBeenCalledWith({
-      where: { id: 'req-3' },
+    expect(prismaMock.request.updateMany).toHaveBeenCalledWith({
+      where: { id: 'req-3', status: 'awaiting_release', deletedAt: null },
       data: { status: 'awaiting_search' },
     });
     expect(jobQueueMock.addSearchJob).toHaveBeenCalledWith(
       'req-3',
-      expect.objectContaining({ id: 'a3', title: 'Released Book', author: 'Some Author' })
+      expect.objectContaining({ id: 'a3', title: 'Released Book', author: 'Some Author' }), { trigger: 'retry' }
     );
     expect(result.transitioned).toBe(1);
     expect(result.triggered).toBe(1);
@@ -147,7 +151,7 @@ describe('processRetryMissingTorrents', () => {
     const result = await processRetryMissingTorrents({ jobId: 'job-4' });
 
     expect(result.success).toBe(true);
-    expect(prismaMock.request.update).not.toHaveBeenCalled();
+    expect(prismaMock.request.updateMany).not.toHaveBeenCalled();
     expect(jobQueueMock.addSearchJob).not.toHaveBeenCalled();
     expect(result.skipped).toBe(1);
     expect(result.transitioned).toBe(0);
@@ -169,12 +173,13 @@ describe('processRetryMissingTorrents', () => {
     const result = await processRetryMissingTorrents({ jobId: 'job-5' });
 
     expect(result.success).toBe(true);
-    expect(prismaMock.request.update).not.toHaveBeenCalled();
+    expect(prismaMock.request.updateMany).not.toHaveBeenCalled();
     expect(jobQueueMock.addSearchJob).toHaveBeenCalled();
     expect(result.triggered).toBe(1);
     expect(prismaMock.request.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         deletedAt: null,
+        AND: [{ OR: [{ nextSearchAt: null }, { nextSearchAt: { lte: expect.any(Date) } }] }],
         status: { in: ['awaiting_search', 'awaiting_release'] },
       },
     }));

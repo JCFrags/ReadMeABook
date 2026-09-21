@@ -28,6 +28,49 @@ vi.mock('@/lib/services/download-client-manager.service', () => ({
 describe('processCleanupSeededTorrents', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.downloadHistory.findFirst.mockReset().mockResolvedValue(null);
+    prismaMock.$transaction.mockImplementation(async (fn) => fn(prismaMock));
+    prismaMock.$queryRaw.mockReset().mockResolvedValue([{ locked: true }]);
+  });
+
+  it.each([true, false])('retains a collection source and its mapping (direct manifest: %s)', async (directManifest) => {
+    configMock.get.mockResolvedValue(JSON.stringify([{ name: 'IndexerA', seedingTimeMinutes: 1 }]));
+    prismaMock.request.findMany.mockResolvedValueOnce([{
+      id: 'collection-request',
+      deletedAt: new Date(),
+      downloadHistory: [{
+        indexerName: 'IndexerA',
+        torrentHash: 'collection-hash',
+        collectionSelection: directManifest ? { version: 1 } : null,
+      }],
+    }]);
+    prismaMock.downloadHistory.findFirst.mockResolvedValueOnce({ id: 'shared-collection-history' });
+
+    const { processCleanupSeededTorrents } = await import('@/lib/processors/cleanup-seeded-torrents.processor');
+    const result = await processCleanupSeededTorrents({ jobId: 'collection-cleanup' });
+
+    expect(result.skipped).toBe(1);
+    expect(prismaMock.request.delete).not.toHaveBeenCalled();
+    expect(downloadClientManagerMock.getClientServiceForProtocol).not.toHaveBeenCalled();
+  });
+
+  it('does not delete while a collection claim holds the hash lock', async () => {
+    prismaMock.$queryRaw.mockResolvedValueOnce([{ locked: false }]);
+    const remove = vi.fn();
+    const { removeUnprotectedSource } = await import('@/lib/services/collection-source-guard');
+
+    expect(await removeUnprotectedSource({ torrentHash: 'collection-hash' }, remove)).toBe(false);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('rechecks collection protection inside the hash lock', async () => {
+    prismaMock.downloadHistory.findFirst.mockResolvedValueOnce({ id: 'new-collection-claim' });
+    const remove = vi.fn();
+    const { removeUnprotectedSource } = await import('@/lib/services/collection-source-guard');
+
+    expect(await removeUnprotectedSource({ torrentHash: 'collection-hash' }, remove)).toBe(false);
+    expect(prismaMock.$queryRaw).toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it('skips when no indexer configuration is found', async () => {

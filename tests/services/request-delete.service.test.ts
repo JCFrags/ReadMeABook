@@ -41,10 +41,40 @@ vi.mock('@/lib/services/audiobookshelf/api', () => ({
 describe('deleteRequest', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.downloadHistory.findFirst.mockReset().mockResolvedValue(null);
+    prismaMock.$transaction.mockImplementation(async (fn) => fn(prismaMock));
+    prismaMock.$queryRaw.mockReset().mockResolvedValue([{ locked: true }]);
     // Default mock for child request queries (audiobook requests check for child ebook requests)
     prismaMock.request.findMany.mockResolvedValue([]);
     prismaMock.request.updateMany.mockResolvedValue({ count: 0 });
     downloadClientManagerMock.getClientServiceForProtocol.mockReset();
+  });
+
+  it.each([true, false])('keeps a shared collection torrent when deleting one request (direct manifest: %s)', async (directManifest) => {
+    prismaMock.request.findFirst.mockResolvedValue({
+      id: 'collection-request',
+      audiobook: { id: 'book-one', title: 'Volume One', author: 'Example Author', filePath: null },
+      downloadHistory: [{
+        indexerName: 'IndexerA',
+        torrentHash: 'collection-hash',
+        collectionSelection: directManifest ? { version: 1 } : null,
+      }],
+    });
+    prismaMock.downloadHistory.findFirst.mockResolvedValueOnce({ id: 'shared-collection-history' });
+    configServiceMock.getBackendMode.mockResolvedValue('plex');
+    prismaMock.plexLibrary.findMany.mockResolvedValue([]);
+
+    const { deleteRequest } = await import('@/lib/services/request-delete.service');
+    const result = await deleteRequest('collection-request', 'admin-one');
+
+    expect(result.success).toBe(true);
+    expect(result.torrentsRemoved).toBe(0);
+    expect(result.torrentsKeptUnlimited).toBe(1);
+    expect(downloadClientManagerMock.getClientServiceForProtocol).not.toHaveBeenCalled();
+    expect(prismaMock.request.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'collection-request' },
+      data: expect.objectContaining({ deletedBy: 'admin-one' }),
+    }));
   });
 
   it('returns not found when request is missing', async () => {

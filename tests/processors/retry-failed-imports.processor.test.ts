@@ -96,6 +96,19 @@ describe('processRetryFailedImports', () => {
     );
   });
 
+  it('retries a collection only with its saved root and exact manifest', async () => {
+    const manifest = { version: 1, batchId: 'batch', infoHash: 'a'.repeat(40), files: [{ index: 0, path: 'Pack/Book.mp3', size: 100, kind: 'audio' }] };
+    prismaMock.request.findMany.mockResolvedValue([{
+      id: 'request', audiobook: { id: 'book', title: 'Book' },
+      downloadHistory: [{ downloadClient: 'qbittorrent', downloadPath: '/downloads', collectionSelection: manifest }],
+    }]);
+    const { processRetryFailedImports } = await import('@/lib/processors/retry-failed-imports.processor');
+    const result = await processRetryFailedImports({});
+    expect(result.triggered).toBe(1);
+    expect(jobQueueMock.addOrganizeJob).toHaveBeenCalledWith('request', 'book', '/downloads', undefined, false, undefined, manifest);
+    expect(downloadClientManagerMock.getClientServiceForProtocol).not.toHaveBeenCalled();
+  });
+
   it('returns early when no requests await import', async () => {
     prismaMock.request.findMany.mockResolvedValue([]);
 

@@ -1,3 +1,9 @@
+# ReadMeABook, JCFrags fork
+
+This fork modifies upstream ReadMeABook v1.2.3. See [fork scope and deployment](FORK.md). Changes began on September 21, 2026. The original AGPL-3.0 license and upstream notices remain in place. This is not an official upstream release.
+
+[Corresponding source](https://github.com/JCFrags/ReadMeABook) · [Upstream project](https://github.com/kikootwo/ReadMeABook)
+
 <div align="center">
 
 ![RMAB_hero.png](screenshots/RMAB_hero.png)

@@ -10,6 +10,8 @@ import { prisma } from '@/lib/db';
 import { RMABLogger } from '@/lib/utils/logger';
 import { CLIENT_PROTOCOL_MAP, DownloadClientType } from '@/lib/interfaces/download-client.interface';
 import { CANCELLABLE_STATUSES } from '@/lib/constants/request-statuses';
+import { resetSearchPolicy } from '@/lib/utils/search-policy';
+import { hasSelectedCollection } from '@/lib/utils/search-state';
 
 const logger = RMABLogger.create('API.RequestById');
 
@@ -297,6 +299,10 @@ export async function PATCH(
 
           jobType = 'import';
         } else {
+          // A selected collection must keep its manifest through recovery.
+          if (await hasSelectedCollection(id)) {
+            return NextResponse.json({ error: 'CollectionRecoveryRequired', message: 'Use collection selection or import recovery for this request.' }, { status: 409 });
+          }
           // Retry search
           const requestWithData = await prisma.request.findFirst({
             where: {
@@ -315,25 +321,23 @@ export async function PATCH(
             );
           }
 
-          await jobQueue.addSearchJob(id, {
+          const reset = await prisma.request.updateMany({
+            where: { id, deletedAt: null, status: { in: ['failed', 'awaiting_search', 'awaiting_release'] } },
+            data: { status: 'pending', progress: 0, errorMessage: null, ...resetSearchPolicy() },
+          });
+          if (!reset.count) return NextResponse.json({ error: 'Conflict', message: 'Request state changed' }, { status: 409 });
+          const searchBook = {
             id: requestWithData.audiobook.id,
             title: requestWithData.audiobook.title,
             author: requestWithData.audiobook.author,
             asin: requestWithData.audiobook.audibleAsin || undefined,
-          });
-
-          updated = await prisma.request.update({
-            where: { id },
-            data: {
-              status: 'pending',
-              progress: 0,
-              errorMessage: null,
-              updatedAt: new Date(),
-            },
-            include: {
-              audiobook: true,
-            },
-          });
+          };
+          if (requestWithData.type === 'ebook') {
+            await jobQueue.addSearchEbookJob(id, searchBook, undefined, { trigger: 'manual' });
+          } else {
+            await jobQueue.addSearchJob(id, searchBook, { trigger: 'manual' });
+          }
+          updated = await prisma.request.findUnique({ where: { id }, include: { audiobook: true } });
 
           jobType = 'search';
         }
