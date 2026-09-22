@@ -7,6 +7,7 @@ This is not an official upstream release. The original [AGPL-3.0 license](LICENS
 ## Scope
 
 - Separate bounded discovery queries from the requested book's matching identity.
+- Group catalog search by exact series ID, retain standalone books, and show matching-volume navigation with the existing Watch confirmation. Existing watch and download policies remain unchanged.
 - Delay confirmed no-match searches for 1, 3, 7, then 14 days. Keep provider failures distinct and prevent duplicate pending or active searches.
 - Use configured RSS categories and bounded release-identity tracking.
 - Preserve validated, already-downloaded EPUB/PDF files without enabling another acquisition source.
