@@ -150,7 +150,7 @@ Modern rows yield strictly richer data (`releaseDate`, `language`, real narrator
 
 **Status:** Production Ready (ASIN-Only Matching)
 
-Single matching algorithm used everywhere (search, popular, new-releases, jobs).
+Strict matchers serve direct ASIN/ISBN checks. Discovery enrichment can also use known work siblings. Reporting uses a separate scoped resolver, not a change to every strict caller.
 
 **Process (Library Availability Checks):**
 1. Query DB directly by ASIN (indexed O(1) lookup)
@@ -161,6 +161,8 @@ Single matching algorithm used everywhere (search, popular, new-releases, jobs).
 **Match Priority:**
 - `findPlexMatch()`: ASIN (field) → ASIN (GUID) → null
 - `matchAudiobook()`: ASIN → ISBN → null
+- Reported audio issues: `reported-issue-target.service.ts` resolves an exact library item first, then known `work_asins` siblings. It rejects ambiguous targets, preserves the submitted ASIN, and saves the actual owned ASIN/backend identity. This fixes reports from a sibling listing shown as available by discovery enrichment. No title matching or new catalog scan is used.
+- Ebook/general reports do not require audio availability. Ebook context is not proof of an audio or ebook file target. Only confirmed audiobook targets can use audiobook replacement. See [reported issues](../backend/services/reported-issues.md).
 
 **Note:** Fuzzy matching (70% threshold) is preserved in `ranking-algorithm.ts` for Prowlarr torrent ranking. Library availability checks require exact ASIN matches only.
 
@@ -190,7 +192,7 @@ Discovery views (search, author books, series detail) collapse duplicate Audible
 
 ### Read Paths
 - **`collapseByExistingWorks()`** — view-level collapse (this section).
-- **`getSiblingAsins()`** — library availability matching (`audiobook-matcher.ts`), request-creation duplicate prevention (`request-creator.service.ts`), ignored-audiobook expansion. Returns sibling ASINs grouped by input ASIN.
+- **`getSiblingAsins()`** — library availability matching (`audiobook-matcher.ts`), request-creation duplicate prevention (`request-creator.service.ts`), report target/duplicate resolution and audio report badges (`reported-issue*.service.ts`), ignored-audiobook expansion. Returns sibling ASINs grouped by input ASIN.
 
 ### Narrator Capture in HTML Scrapers
 - HTML scrapers (`audible-series.ts`, the two `parse*Items` parsers in `audible.service.ts`) capture **all** narrator anchors via `extractAllNarrators()` (`src/lib/utils/extract-narrator.ts`). Multi-narrator productions render each name as its own `<a href="?searchNarrator=...">` link; capturing only the first (prior bug) made co-narrated audiobooks fail to dedup. Order is not significant — `normalizeNarrator()` sorts before comparison.

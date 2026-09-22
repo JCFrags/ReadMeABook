@@ -71,7 +71,11 @@ export class DiscordProvider implements INotificationProvider {
     ];
 
     if (message) {
-      fields.push({ name: meta.messageLabel ?? 'Error', value: message, inline: false });
+      // Report reasons can exceed Discord's 1024-character field limit.
+      const chunks = isIssue ? message.match(/[\s\S]{1,1024}/g) ?? [] : [message];
+      chunks.forEach((value, index) => fields.push({
+        name: `${meta.messageLabel ?? 'Error'}${index ? ' (continued)' : ''}`, value, inline: false,
+      }));
     }
 
     return {

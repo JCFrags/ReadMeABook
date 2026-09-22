@@ -96,9 +96,12 @@ export class PushoverProvider implements INotificationProvider {
       messageLines.push('', `${msgEmoji} ${messageLabel}: ${message}`);
     }
 
+    const text = messageLines.join('\n');
+    // Pushover limits the complete message to 1024 characters. The full report stays in RMAB.
+    const suffix = '\n[Truncated. Read the full report in RMAB.]';
     return {
       title: resolvedTitle,
-      message: messageLines.join('\n'),
+      message: isIssue && text.length > 1024 ? text.slice(0, 1024 - suffix.length) + suffix : text,
     };
   }
 }

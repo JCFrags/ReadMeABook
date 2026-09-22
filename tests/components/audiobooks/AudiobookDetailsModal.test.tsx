@@ -190,6 +190,7 @@ describe('AudiobookDetailsModal', () => {
         isOpen={true}
         onClose={vi.fn()}
         isAvailable={true}
+        hasReportedIssue={true}
       />
     );
 
@@ -197,6 +198,8 @@ describe('AudiobookDetailsModal', () => {
     // Status badge and button both show "In Your Library"
     expect(screen.getAllByText('In Your Library').length).toBeGreaterThan(0);
     expect(screen.queryByTitle('Interactive Search')).toBeNull();
+    expect(screen.getByText('Audio issue reported')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Report a problem' })).toBeEnabled();
   });
 
   it('shows pending approval status with requester name', async () => {

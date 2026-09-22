@@ -3,6 +3,8 @@
  * Documentation: documentation/backend/services/reported-issues.md
  */
 
+import { ebookFormat, reportBook, reportKind, reportTarget, type EbookFormat, type ReportKind, type ReportTarget } from '@/lib/types/reported-issues';
+
 export const PI_NOTIFY_SOURCE = 'readmeabook';
 export const PI_NOTIFY_ISSUE_TYPE = 'readmeabook.issue_reported';
 
@@ -17,7 +19,12 @@ export interface PiNotifyIssueEvent {
   data: {
     issueId: string;
     statusAtPublication: 'open';
-    book: { id: string; asin: string | null; title: string; author: string };
+    // Optional on frozen events created before format-aware reporting.
+    kind?: ReportKind | 'unknown';
+    ebookFormat?: EbookFormat | null;
+    submittedAsin?: string | null;
+    target?: ReportTarget | null;
+    book: { id: string | null; asin: string | null; title: string; author: string } | null;
     report: { text: string; trust: 'untrusted-user-input' };
     references: { adminUrl: string; openIssuesApiUrl: string; audiobookApiUrl: string | null };
   };
@@ -27,7 +34,12 @@ export interface IssueEventSource {
   id: string;
   createdAt: Date;
   reason: string;
-  audiobook: { id: string; audibleAsin: string | null; title: string; author: string };
+  kind?: string;
+  ebookFormat?: string | null;
+  submittedAsin?: string | null;
+  bookContext?: unknown;
+  target?: unknown;
+  audiobook: { id: string; audibleAsin: string | null; title: string; author: string } | null;
 }
 
 export function buildIssueEvent(backendId: string, applicationUrl: string, issue: IssueEventSource): PiNotifyIssueEvent {
@@ -41,7 +53,9 @@ export function buildIssueEvent(backendId: string, applicationUrl: string, issue
     throw new Error('Pi-Notify application URL must be HTTP(S) without credentials, query, or fragment');
   }
   const root = base.href.replace(/\/+$/, '');
-  const asin = issue.audiobook.audibleAsin;
+  const kind = reportKind(issue.kind ?? 'audiobook');
+  const book = reportBook(issue);
+  const asin = book?.asin ?? null;
   return {
     schemaVersion: 1,
     id: `issue-reported:${issue.id}:${backendId}`,
@@ -52,7 +66,11 @@ export function buildIssueEvent(backendId: string, applicationUrl: string, issue
     data: {
       issueId: issue.id,
       statusAtPublication: 'open',
-      book: { id: issue.audiobook.id, asin, title: issue.audiobook.title, author: issue.audiobook.author },
+      kind,
+      ebookFormat: kind === 'ebook' ? ebookFormat(issue.ebookFormat) : null,
+      submittedAsin: issue.submittedAsin ?? null,
+      target: kind === 'audiobook' ? reportTarget(issue.target) : null,
+      book: book ? { id: book.id, asin, title: book.title, author: book.author } : null,
       report: { text: issue.reason, trust: 'untrusted-user-input' },
       references: {
         adminUrl: `${root}/admin`,

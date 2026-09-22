@@ -12,6 +12,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/Button';
 import { VersionBadge } from '@/components/ui/VersionBadge';
 import { ChangePasswordModal } from '@/components/ui/ChangePasswordModal';
+import { ReportIssueModal } from '@/components/audiobooks/ReportIssueModal';
 import { useSmartDropdownPosition } from '@/hooks/useSmartDropdownPosition';
 
 export function Header() {
@@ -20,6 +21,7 @@ export function Header() {
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [showBookDate, setShowBookDate] = useState(false);
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [showReportIssue, setShowReportIssue] = useState(false);
   const { containerRef, dropdownRef, positionAbove, style } =
     useSmartDropdownPosition(showUserMenu);
 
@@ -75,9 +77,16 @@ export function Header() {
     }
   };
 
+  const openReportForm = () => {
+    setShowUserMenu(false);
+    setShowMobileMenu(false);
+    setShowReportIssue(true);
+  };
+
   // User menu dropdown (rendered via portal)
-  const userMenuDropdown = showUserMenu && style && (
+  const userMenuDropdown = user && showUserMenu && style && (
     <div
+      id="user-menu"
       ref={dropdownRef}
       style={style}
       className="w-48 bg-white dark:bg-gray-800 rounded-lg shadow-lg py-1 z-50 max-h-[calc(100vh-2rem)] overflow-y-auto"
@@ -89,6 +98,12 @@ export function Header() {
       >
         Profile
       </Link>
+      <button
+        onClick={openReportForm}
+        className="w-full text-left px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+      >
+        Report a problem
+      </button>
       {canChangePassword && (
         <button
           onClick={() => {
@@ -208,6 +223,8 @@ export function Header() {
               onClick={() => setShowMobileMenu(!showMobileMenu)}
               className="md:hidden p-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md"
               aria-label="Toggle menu"
+              aria-expanded={showMobileMenu}
+              aria-controls="mobile-navigation"
             >
               {showMobileMenu ? (
                 <svg
@@ -245,6 +262,9 @@ export function Header() {
                 <button
                   onClick={() => setShowUserMenu(!showUserMenu)}
                   className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+                  aria-label="User menu"
+                  aria-expanded={showUserMenu}
+                  aria-controls="user-menu"
                 >
                   {user.avatarUrl ? (
                     <img
@@ -273,7 +293,7 @@ export function Header() {
         {/* Mobile Navigation Menu */}
         {showMobileMenu && (
           <div className="md:hidden border-t border-gray-200 dark:border-gray-700 mt-3 pt-3">
-            <nav className="flex flex-col space-y-2">
+            <nav id="mobile-navigation" className="flex flex-col space-y-2">
               <Link
                 href="/"
                 onClick={() => setShowMobileMenu(false)}
@@ -313,6 +333,14 @@ export function Header() {
                   My Requests
                 </Link>
               )}
+              {user && (
+                <button
+                  onClick={openReportForm}
+                  className="text-left px-3 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors"
+                >
+                  Report a problem
+                </button>
+              )}
               {user?.role === 'admin' && (
                 <Link
                   href="/admin"
@@ -341,6 +369,15 @@ export function Header() {
         isOpen={showChangePasswordModal}
         onClose={() => setShowChangePasswordModal(false)}
       />
+      {user && showReportIssue && (
+        <ReportIssueModal
+          isOpen={showReportIssue}
+          onClose={() => {
+            setShowReportIssue(false);
+            containerRef.current?.querySelector('button')?.focus();
+          }}
+        />
+      )}
     </header>
   );
 }

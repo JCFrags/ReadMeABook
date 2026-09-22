@@ -518,14 +518,19 @@ model NotificationBackend {
 
 // ============================================================================
 // REPORTED ISSUES TABLE
-// User-reported problems with available audiobooks (corrupted, wrong book, etc.)
+// User-reported audiobook, ebook, or general problems. Targets are server-resolved.
 // ============================================================================
 
 model ReportedIssue {
   id           String    @id @default(uuid())
-  audiobookId  String    @map("audiobook_id")
+  audiobookId  String?   @map("audiobook_id")
   reporterId   String    @map("reporter_id")
-  reason       String    @db.VarChar(250)
+  kind         String    @default("audiobook") // audiobook, ebook, general
+  ebookFormat  String?   @map("ebook_format") // epub, pdf, unknown; null for other kinds
+  submittedAsin String?  @map("submitted_asin")
+  bookContext  Json?     @map("book_context") // Display metadata, not action authority
+  target       Json?    // Server-resolved identity, revalidated before replacement
+  reason       String    @db.VarChar(2000)
   status       String    @default("open") // open, dismissed, replaced
   resolvedAt   DateTime? @map("resolved_at")
   resolvedById String?   @map("resolved_by_id")
@@ -533,7 +538,7 @@ model ReportedIssue {
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
   // Relations
-  audiobook  Audiobook @relation(fields: [audiobookId], references: [id], onDelete: Cascade)
+  audiobook  Audiobook? @relation(fields: [audiobookId], references: [id], onDelete: Cascade)
   reporter   User      @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
   resolvedBy User?     @relation("Resolver", fields: [resolvedById], references: [id], onDelete: SetNull)
   notificationDeliveries IssueNotificationDelivery[]
@@ -541,6 +546,7 @@ model ReportedIssue {
   @@index([audiobookId])
   @@index([reporterId])
   @@index([status])
+  @@index([kind, submittedAsin, status])
   @@map("reported_issues")
 }
 

@@ -8,44 +8,44 @@
 import { useState } from 'react';
 import useSWR, { mutate } from 'swr';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchWithAuth } from '@/lib/utils/api';
+import { fetchJSON, fetchWithAuth } from '@/lib/utils/api';
+import type { ReportIssueInput, ReportedIssue } from '@/lib/types/reported-issues';
 
-const fetcher = (url: string) =>
-  fetchWithAuth(url).then((res) => res.json());
+const fetcher = (url: string) => fetchJSON(url);
 
 /**
- * Hook for reporting an issue with an audiobook (user action)
+ * Hook for reporting an audio, ebook, or general problem (user action)
  */
 export function useReportIssue() {
   const { accessToken } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const reportIssue = async (
-    asin: string,
-    reason: string,
-    metadata?: { title?: string; author?: string; coverArtUrl?: string }
-  ) => {
-    if (!accessToken) throw new Error('Not authenticated');
+  const reportIssue = async (input: ReportIssueInput): Promise<ReportedIssue> => {
+    if (!accessToken) throw new Error('Please sign in to report a problem.');
 
     setIsLoading(true);
     setError(null);
 
     try {
-      const response = await fetchWithAuth(`/api/audiobooks/${asin}/report-issue`, {
+      const response = await fetchWithAuth('/api/reported-issues', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason, ...metadata }),
+        body: JSON.stringify(input),
       });
 
-      const data = await response.json();
-
+      const data = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(data.message || 'Failed to report issue');
+        throw new Error(data?.message || `Failed to save report (HTTP ${response.status}). Please try again.`);
+      }
+      if (data?.success !== true || typeof data?.issue?.id !== 'string') {
+        throw new Error('The server did not confirm that the report was saved. Please check before submitting again.');
       }
 
-      // Revalidate audiobook lists to show issue indicator
-      mutate((key) => typeof key === 'string' && key.includes('/api/audiobooks'));
+      // A refresh failure must not turn a saved report into a submission error.
+      void mutate((key) => typeof key === 'string' && (
+        key.includes('/api/audiobooks') || key.includes('/api/admin/reported-issues')
+      )).catch(() => undefined);
 
       return data.issue;
     } catch (err) {
@@ -68,7 +68,7 @@ export function useAdminReportedIssues() {
 
   const endpoint = accessToken ? '/api/admin/reported-issues' : null;
 
-  const { data, error, isLoading } = useSWR(endpoint, fetcher, {
+  const { data, error, isLoading } = useSWR<{ issues: ReportedIssue[]; count: number }>(endpoint, fetcher, {
     refreshInterval: 10000,
   });
 

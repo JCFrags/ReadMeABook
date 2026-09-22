@@ -15,25 +15,17 @@ import { formatDistanceToNow } from 'date-fns';
 import { InteractiveTorrentSearchModal } from '@/components/requests/InteractiveTorrentSearchModal';
 import { fetchJSON } from '@/lib/utils/api';
 import { mutate } from 'swr';
+import type { ReportedIssue } from '@/lib/types/reported-issues';
 
-interface ReportedIssue {
-  id: string;
-  reason: string;
-  status: string;
-  createdAt: string;
-  audiobook: {
-    id: string;
-    title: string;
-    author: string;
-    coverArtUrl: string | null;
-    audibleAsin: string | null;
-  };
-  reporter: {
-    id: string;
-    plexUsername: string;
-    avatarUrl: string | null;
-  };
-}
+const reportLabels: Record<ReportedIssue['kind'], string> = {
+  audiobook: 'Audio',
+  ebook: 'Ebook',
+  general: 'General / not sure',
+  unknown: 'Unknown report type',
+};
+
+const canReplaceReport = (issue: ReportedIssue) => issue.canReplace === true
+  && issue.kind === 'audiobook' && issue.target?.type === 'audiobook' && !!issue.audiobook;
 
 interface ReportedIssuesSectionProps {
   issues: ReportedIssue[];
@@ -42,7 +34,8 @@ interface ReportedIssuesSectionProps {
 export function ReportedIssuesSection({ issues }: ReportedIssuesSectionProps) {
   const toast = useToast();
   const [loadingStates, setLoadingStates] = useState<Record<string, boolean>>({});
-  const [replaceIssue, setReplaceIssue] = useState<ReportedIssue | null>(null);
+  const [replaceIssueId, setReplaceIssueId] = useState<string | null>(null);
+  const replaceIssue = issues.find((issue) => issue.id === replaceIssueId && canReplaceReport(issue));
 
   const handleDismiss = async (issueId: string) => {
     setLoadingStates((prev) => ({ ...prev, [issueId]: true }));
@@ -66,7 +59,7 @@ export function ReportedIssuesSection({ issues }: ReportedIssuesSectionProps) {
 
   const handleReplaceSuccess = async () => {
     toast.success('Replacement download started');
-    setReplaceIssue(null);
+    setReplaceIssueId(null);
     await mutate((key: unknown) => typeof key === 'string' && key.includes('/api/admin/reported-issues'));
     await mutate((key: unknown) => typeof key === 'string' && key.includes('/api/admin/metrics'));
   };
@@ -99,10 +92,16 @@ export function ReportedIssuesSection({ issues }: ReportedIssuesSectionProps) {
           </span>
         </div>
 
+        <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">Dismiss closes a report without changing files.</p>
+
         {/* Issues Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {issues.map((issue) => {
             const isLoading = loadingStates[issue.id] || false;
+            const title = issue.book?.title || issue.audiobook?.title || 'No book specified';
+            const author = issue.book?.author || issue.audiobook?.author;
+            const canReplace = canReplaceReport(issue);
+            const targetLabel = issue.target ? 'Audio target linked' : issue.kind === 'general' ? 'No media target' : 'Unresolved target';
 
             return (
               <div
@@ -116,8 +115,8 @@ export function ReportedIssuesSection({ issues }: ReportedIssuesSectionProps) {
                     <div className="flex-shrink-0">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
-                        src={issue.audiobook.coverArtUrl || '/placeholder_cover.svg'}
-                        alt={issue.audiobook.title}
+                        src={issue.book?.coverArtUrl || issue.audiobook?.coverArtUrl || '/placeholder_cover.svg'}
+                        alt=""
                         className="w-16 h-16 rounded object-cover"
                         onError={(e) => { (e.target as HTMLImageElement).src = '/placeholder_cover.svg'; }}
                       />
@@ -125,12 +124,15 @@ export function ReportedIssuesSection({ issues }: ReportedIssuesSectionProps) {
 
                     {/* Info */}
                     <div className="flex-1 min-w-0">
-                      <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate">
-                        {issue.audiobook.title}
+                      <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100 break-words">
+                        {title}
                       </h3>
-                      <p className="text-sm text-gray-600 dark:text-gray-400 truncate">
-                        {issue.audiobook.author}
+                      {author && <p className="text-sm text-gray-600 dark:text-gray-400 break-words">{author}</p>}
+                      <p className="mt-1 text-xs font-medium text-orange-700 dark:text-orange-300">
+                        {reportLabels[issue.kind] || reportLabels.unknown}
+                        {issue.kind === 'ebook' && ` · ${issue.ebookFormat === 'epub' ? 'EPUB' : issue.ebookFormat === 'pdf' ? 'PDF' : 'Format not sure'}`}
                       </p>
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{targetLabel}</p>
 
                       {/* Reporter */}
                       <div className="flex items-center gap-2 mt-2">
@@ -168,7 +170,7 @@ export function ReportedIssuesSection({ issues }: ReportedIssuesSectionProps) {
                   </div>
 
                   {/* Reason */}
-                  <p className="mt-3 text-sm text-gray-700 dark:text-gray-300 line-clamp-2 break-words bg-orange-50 dark:bg-orange-900/20 rounded-lg px-3 py-2 border border-orange-100 dark:border-orange-800/50">
+                  <p tabIndex={0} aria-label="Reported problem" className="mt-3 max-h-48 overflow-y-auto text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words bg-orange-50 dark:bg-orange-900/20 rounded-lg px-3 py-2 border border-orange-100 dark:border-orange-800/50">
                     {issue.reason}
                   </p>
                 </div>
@@ -178,6 +180,7 @@ export function ReportedIssuesSection({ issues }: ReportedIssuesSectionProps) {
                   <button
                     onClick={() => handleDismiss(issue.id)}
                     disabled={isLoading}
+                    title="Close this report without changing files"
                     className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-gray-500 hover:bg-gray-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
                   >
                     {isLoading ? (
@@ -193,16 +196,18 @@ export function ReportedIssuesSection({ issues }: ReportedIssuesSectionProps) {
                     <span>Dismiss</span>
                   </button>
 
-                  <button
-                    onClick={() => setReplaceIssue(issue)}
-                    disabled={isLoading}
-                    className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                    </svg>
-                    <span>Replace</span>
-                  </button>
+                  {canReplace && (
+                    <button
+                      onClick={() => setReplaceIssueId(issue.id)}
+                      disabled={isLoading}
+                      className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                      <span>Replace</span>
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -211,17 +216,17 @@ export function ReportedIssuesSection({ issues }: ReportedIssuesSectionProps) {
       </div>
 
       {/* Interactive Search Modal for Replacement */}
-      {replaceIssue && createPortal(
+      {replaceIssue?.audiobook && createPortal(
         <div className="fixed inset-0 z-[60]">
           <InteractiveTorrentSearchModal
             isOpen={!!replaceIssue}
-            onClose={() => setReplaceIssue(null)}
+            onClose={() => setReplaceIssueId(null)}
             onSuccess={handleReplaceSuccess}
             audiobook={{
               title: replaceIssue.audiobook.title,
               author: replaceIssue.audiobook.author,
             }}
-            asin={replaceIssue.audiobook.audibleAsin || undefined}
+            asin={replaceIssue.target?.asin || replaceIssue.audiobook.audibleAsin || undefined}
             replaceIssueId={replaceIssue.id}
           />
         </div>,

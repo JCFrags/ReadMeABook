@@ -23,14 +23,14 @@ src/components/
 ## Key Components
 
 **Layout**
-- **Header** ✅ - Top nav with one Search entry for books and series, user menu with "Change Password" option (local users only), logout
+- **Header** ✅ - Top nav with one Search entry for books and series, user menu with "Change Password" option (local users only), logout. Signed-in users can open "Report a problem" from the user menu or mobile navigation. No book is required.
 - **Sidebar** - Admin side nav
 - **Footer** - Version, links
 
 **Audiobooks**
 - **AudiobookCard** ✅ - Cover, title, author, narrator, duration, request button, clickable to open details modal. Shows "Requested by [username]" when someone else has requested the book, "Requested" when current user has requested it
 - **AudiobookGrid** - Responsive grid (1/2/3/4 cols)
-- **AudiobookDetailsModal** ✅ - Full-screen modal with comprehensive metadata (description, genres, rating, release date, narrator, language, format, publisher, request functionality). Shows requesting user's name when applicable
+- **AudiobookDetailsModal** ✅ - Full-screen modal with comprehensive metadata (description, genres, rating, release date, narrator, language, format, publisher, request functionality). Shows requesting user's name when applicable. "Report a problem" prefills the book context and remains available when an audio issue already exists.
 
 **Series and search**
 - **SeriesCard** - Series title, representative cover, optional catalog summary, Watch/Watching action outside the navigation link. Search cards show loaded matching-book count, not total series size.
@@ -52,6 +52,7 @@ src/components/
 - **Modal** ✅ - Dialog overlay with backdrop, sizes (sm/md/lg/xl/full), ESC to close, body scroll lock
 - **ConfirmModal** ✅ - Confirmation dialog with customizable title, message, buttons, loading state, and variant (primary/danger)
 - **ChangePasswordModal** ✅ - Password change form for local users. Three fields (current, new, confirm), real-time validation, success/error states, auto-closes on success. Only accessible to users with `authProvider='local'`
+- **ReportIssueModal** - Shared Audio, Ebook, and General / not sure form. Ebook format: EPUB, PDF, or Not sure. Book details default to Audio. Global entry defaults to General / not sure, with optional title/author and no catalog picker. Audio requires opening a book's details and a server-resolved library target. Ebook/general can remain unresolved. Reason: 1–2000 characters. Shows "Report saved" only after a successful saved-issue response. API errors retain the draft. Submission saves a report and does not start ReadMeABook's Replace action. This does not prevent later actions by a separately authorized external agent. Dialog includes visible labels, keyboard focus handling, and a scrollable mobile form.
 - **Pagination** ✅ - Traditional page navigation with prev/next buttons, smart ellipsis (shows 1...4 5 6...10)
 - **StickyPagination** ✅ - Minimal floating pill at bottom center with prev/next arrows, quick jump input, section label. Shows/hides based on section visibility (IntersectionObserver). Rounded-full design, backdrop blur, subtle shadow, auto-scroll on page change
 
@@ -63,6 +64,7 @@ src/components/
 - **MetricCard** - Icon, label, value, trend
 - **DataTable** - Sorting, filtering, pagination
 - **Chart** - Line/bar/pie
+- **ReportedIssuesSection** (`src/app/admin/components/ReportedIssuesSection.tsx`) - Displays report kind, ebook format, nullable book context, target status, and the full scrollable reason. Dismiss closes any report without changing files. Replace appears only for a linked audiobook when the backend returns `canReplace=true`. Ebook, general, unknown, and unresolved reports do not offer replacement.
 
 ## Pages Implemented ✅
 
@@ -144,6 +146,15 @@ interface AudiobookDetailsModalProps {
   adminActions?: React.ReactNode; // Optional admin buttons (Approve/Search/Deny) rendered as second row in action bar
 }
 
+interface ReportIssueModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  asin?: string;
+  bookTitle?: string;
+  bookAuthor?: string;
+  coverArtUrl?: string;
+}
+
 interface RequestCardProps {
   request: {id, status, progress, audiobook: {title, author, coverArtUrl?}, createdAt, updatedAt};
   showActions?: boolean;
@@ -208,6 +219,7 @@ interface UnifiedPaginationProps {
 - **useSearch** - Explicitly paginated book matches with `seriesAsin`, `series`, `seriesPart` when the provider supplies them. `totalResults` is the provider book-match total, not a series count.
 - **useSeriesDetail** - Explicitly paginated series metadata and books. `seriesPart` comes from the provider's volume heading.
 - **useRequest** - `{createRequest, cancelRequest, isLoading}`
+- **useReportIssue** - `reportIssue(ReportIssueInput)` posts to authenticated `POST /api/reported-issues`. Uses shared types from `src/lib/types/reported-issues.ts` and returns a confirmed saved issue. [Backend contract and Pi-Notify delivery](../backend/services/reported-issues.md).
 
 ## Styling
 

@@ -13,6 +13,7 @@ This is not an official upstream release. The original [AGPL-3.0 license](LICENS
 - Preserve validated, already-downloaded EPUB/PDF files without enabling another acquisition source.
 - Return confirmed ebook-only audio downloads to a delayed search state after blocking the bad release. Preserve their source files.
 - Select explicit files from a collection, track one request per book, and preserve collection sources for later volumes.
+- Accept format-specific audiobook and ebook reports plus general reports without a book. Resolve known audiobook catalog aliases to the owned copy, and keep ebook or unresolved targets out of audiobook replacement.
 - Publish opt-in structured Report Issue events to Pi-Notify through an authenticated provider, durable receipts, and bounded Bull reconciliation. The receiver subscription owns the repair target and approved instructions. Reporting and event acceptance do not authorize deletion or replacement. See [reported issues](documentation/backend/services/reported-issues.md).
 
 Matching metadata is not proof of a complete or correct edition. Unknown or conflicting identity can require manual review. Existing watched-series controls can request missing back-catalog books immediately. A watch is not a next-volume-only policy.
