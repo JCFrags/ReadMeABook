@@ -24,7 +24,7 @@ export function LoadMoreBar({
   onLoadMore,
   itemLabel = 'books',
 }: LoadMoreBarProps) {
-  if (loadedCount === 0) return null;
+  if (loadedCount === 0 && !hasMore) return null;
 
   const allLoaded = !hasMore && !isLoading;
 

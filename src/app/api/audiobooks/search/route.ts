@@ -4,7 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getAudibleService } from '@/lib/integrations/audible.service';
+import { getAudibleService, type AudibleAudiobook } from '@/lib/integrations/audible.service';
 import { enrichAudiobooksWithMatches } from '@/lib/utils/audiobook-matcher';
 import { deduplicateAndCollectGroups } from '@/lib/utils/deduplicate-audiobooks';
 import { persistDedupGroups, collapseByExistingWorks } from '@/lib/services/works.service';
@@ -41,16 +41,25 @@ export async function GET(request: NextRequest) {
     const currentUser = await getCurrentUserAsync(request);
     const userId = currentUser?.sub || undefined;
 
-    // Two-pass dedup: local title/narrator/duration matching first, then collapse
-    // any remaining duplicates that the works table already knows are the same book
-    // (handles cases where source metadata diverges across paths or pages).
-    const { books: dedupedResults, groups } = deduplicateAndCollectGroups(results.results);
-
-    if (groups.length > 0) {
-      persistDedupGroups(groups).catch(() => {});
+    // Search must retain each exact series identity, even when title/narrator
+    // matching or an existing work links books from different series. Keep
+    // books without series IDs separate. Shared acquisition matching is unchanged.
+    const seriesBuckets = new Map<string, AudibleAudiobook[]>();
+    for (const book of results.results) {
+      const key = book.seriesAsin || '';
+      const bucket = seriesBuckets.get(key) || [];
+      bucket.push(book);
+      seriesBuckets.set(key, bucket);
     }
-
-    const collapsedResults = await collapseByExistingWorks(dedupedResults);
+    const collapsedBuckets = await Promise.all([...seriesBuckets.values()].map(async books => {
+      const { books: deduped, groups } = deduplicateAndCollectGroups(books);
+      if (groups.length > 0) persistDedupGroups(groups).catch(() => {});
+      return collapseByExistingWorks(deduped);
+    }));
+    const resultOrder = new Map(results.results.map((book, index) => [book.asin, index]));
+    const collapsedResults = collapsedBuckets.flat().sort((a, b) =>
+      (resultOrder.get(a.asin) ?? 0) - (resultOrder.get(b.asin) ?? 0)
+    );
 
     // Enrich search results with availability and request status information
     const enrichedResults = await enrichAudiobooksWithMatches(collapsedResults, userId);
@@ -62,7 +71,7 @@ export async function GET(request: NextRequest) {
       success: true,
       query: results.query,
       results: annotatedResults,
-      totalResults: enrichedResults.length,
+      totalResults: results.totalResults,
       page: results.page,
       hasMore: results.hasMore,
     });

@@ -5,30 +5,44 @@
 
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Suspense, useState, useEffect, useMemo } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Header } from '@/components/layout/Header';
-import { AudiobookGrid } from '@/components/audiobooks/AudiobookGrid';
+import { SearchResultsGrid } from '@/components/series/SearchResultsGrid';
+import { groupSearchResults } from '@/lib/utils/group-search-results';
 import { LoadMoreBar } from '@/components/ui/LoadMoreBar';
 import { useSearch, Audiobook } from '@/lib/hooks/useAudiobooks';
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
 import { SectionToolbar } from '@/components/ui/SectionToolbar';
 import { usePreferences } from '@/contexts/PreferencesContext';
 
-export default function SearchPage() {
-  const [query, setQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
+function SearchPageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlQuery = searchParams.get('q') || '';
+  const [query, setQuery] = useState(urlQuery);
+  const [debouncedQuery, setDebouncedQuery] = useState(urlQuery);
   const { cardSize, setCardSize, squareCovers, setSquareCovers, hideAvailable, setHideAvailable } = usePreferences();
 
-  // Debounce search query
+  // Restore the query on direct links and browser back/forward navigation.
+  useEffect(() => {
+    setQuery(urlQuery);
+    setDebouncedQuery(urlQuery);
+  }, [urlQuery]);
+
   useEffect(() => {
     const timer = setTimeout(() => {
-      setDebouncedQuery(query);
+      const trimmed = query.trim();
+      setDebouncedQuery(trimmed);
+      if (trimmed !== urlQuery) {
+        router.replace(trimmed ? `/search?q=${encodeURIComponent(trimmed)}` : '/search', { scroll: false });
+      }
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, urlQuery, router]);
 
-  const { results, totalResults, hasMore, isLoading, isLoadingMore, loadMore } = useSearch(debouncedQuery);
+  const { results, totalResults, hasMore, isLoading, isLoadingMore, loadMore, error } = useSearch(debouncedQuery);
 
   // Filter out available titles when hideAvailable is enabled
   const filteredResults = useMemo(
@@ -36,17 +50,16 @@ export default function SearchPage() {
     [results, hideAvailable]
   );
 
-  const handleSearch = useCallback((e: React.FormEvent) => {
-    e.preventDefault();
-  }, []);
+  const groupedResults = useMemo(() => groupSearchResults(filteredResults, debouncedQuery), [filteredResults, debouncedQuery]);
+  const seriesCount = groupedResults.filter(result => result.kind === 'series').length;
+  const bookCount = groupedResults.length - seriesCount;
+  const countText = `${seriesCount} series, ${bookCount} individual book${bookCount === 1 ? '' : 's'}`;
 
-  // Header count text: reflects filtered counts
-  const visibleCount = filteredResults.length;
-  const countText = hasMore && totalResults > 0
-    ? `${visibleCount.toLocaleString()} of ${totalResults.toLocaleString()} result${totalResults !== 1 ? 's' : ''}`
-    : visibleCount > 0
-      ? `${visibleCount.toLocaleString()} result${visibleCount !== 1 ? 's' : ''}`
-      : '';
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    setDebouncedQuery(query.trim());
+    router.replace(query.trim() ? `/search?q=${encodeURIComponent(query.trim())}` : '/search', { scroll: false });
+  };
 
   return (
     <ProtectedRoute>
@@ -57,10 +70,10 @@ export default function SearchPage() {
         {/* Search Header */}
         <div className="text-center space-y-4">
           <h1 className="text-4xl font-bold text-gray-900 dark:text-gray-100">
-            Search Audiobooks
+            Search Audiobooks and Series
           </h1>
           <p className="text-gray-600 dark:text-gray-400">
-            Find and request any audiobook from Audible
+            Find audiobooks and series from Audible
           </p>
         </div>
 
@@ -86,7 +99,8 @@ export default function SearchPage() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search by title, author, or narrator..."
+              placeholder="Search by book, series, author, or narrator..."
+              aria-label="Search audiobooks and series"
               className="w-full pl-12 pr-12 py-4 text-lg border-2 border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400"
               autoFocus
             />
@@ -94,6 +108,7 @@ export default function SearchPage() {
               <button
                 type="button"
                 onClick={() => setQuery('')}
+                aria-label="Clear search"
                 className="absolute inset-y-0 right-0 pr-4 flex items-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
               >
                 <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -137,24 +152,34 @@ export default function SearchPage() {
               </div>
             </div>
 
-            {/* Results Grid */}
-            <AudiobookGrid
-              audiobooks={filteredResults}
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Series group the loaded book matches. Load more to find additional matches.
+              {hideAvailable && ' Hide available applies only to loaded matches, not every book in a series.'}
+            </p>
+            {error && (
+              <p role="alert" className="text-red-600 dark:text-red-400">
+                Search could not load. Try again or change your search.
+              </p>
+            )}
+            <SearchResultsGrid
+              results={groupedResults}
+              query={debouncedQuery}
               isLoading={isLoading}
-              emptyMessage={`No results found for "${debouncedQuery}"`}
+              emptyMessage={hideAvailable && results.length > 0
+                ? 'No visible matches in the loaded books. Show available books or load more.'
+                : `No results found for "${debouncedQuery}"`}
               cardSize={cardSize}
               squareCovers={squareCovers}
             />
 
-            {/* Load More Bar */}
-            {filteredResults.length > 0 && (
+            {(results.length > 0 || hasMore) && (
               <LoadMoreBar
-                loadedCount={filteredResults.length}
+                loadedCount={results.length}
                 totalCount={totalResults}
                 hasMore={hasMore}
                 isLoading={isLoadingMore}
                 onLoadMore={loadMore}
-                itemLabel="results"
+                itemLabel="book matches"
               />
             )}
           </div>
@@ -175,10 +200,10 @@ export default function SearchPage() {
               />
             </svg>
             <p className="text-xl text-gray-600 dark:text-gray-400">
-              Start typing to search for audiobooks
+              Start typing to search for audiobooks and series
             </p>
             <p className="text-sm text-gray-500 dark:text-gray-500">
-              Search by title, author, or narrator name
+              Search by book, series, author, or narrator name
             </p>
           </div>
         )}
@@ -186,4 +211,8 @@ export default function SearchPage() {
       </div>
     </ProtectedRoute>
   );
+}
+
+export default function SearchPage() {
+  return <Suspense><SearchPageContent /></Suspense>;
 }

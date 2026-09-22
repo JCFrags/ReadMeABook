@@ -188,7 +188,9 @@ describe('parseSeriesBooks', () => {
       durationMinutes: 977,
       releaseDate: '2020-10-20',
       language: 'English',
+      seriesPart: '1',
     });
+    expect(books[1].seriesPart).toBe('2');
   });
 
   it('parses books from the legacy productListItem layout', () => {
@@ -247,6 +249,12 @@ describe('parseSeriesBooks', () => {
     </body></html>`);
 
     expect(parseBooks($)).toEqual([]);
+  });
+
+  it('does not invent volume numbers when a real row has no series heading', () => {
+    const html = makeModernPage(modernRow(BOOKS[0], 0)).replace('series-header="Book 1"', '');
+    expect(parseBooks(cheerio.load(html))[0].seriesPart).toBeUndefined();
+    expect(parseBooks(legacy$())[0].seriesPart).toBeUndefined();
   });
 
   it('returns an empty array when the page has no book rows', () => {

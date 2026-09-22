@@ -23,7 +23,7 @@ src/components/
 ## Key Components
 
 **Layout**
-- **Header** ✅ - Top nav, search input, user menu with "Change Password" option (local users only), logout
+- **Header** ✅ - Top nav with one Search entry for books and series, user menu with "Change Password" option (local users only), logout
 - **Sidebar** - Admin side nav
 - **Footer** - Version, links
 
@@ -31,6 +31,11 @@ src/components/
 - **AudiobookCard** ✅ - Cover, title, author, narrator, duration, request button, clickable to open details modal. Shows "Requested by [username]" when someone else has requested the book, "Requested" when current user has requested it
 - **AudiobookGrid** - Responsive grid (1/2/3/4 cols)
 - **AudiobookDetailsModal** ✅ - Full-screen modal with comprehensive metadata (description, genres, rating, release date, narrator, language, format, publisher, request functionality). Shows requesting user's name when applicable
+
+**Series and search**
+- **SeriesCard** - Series title, representative cover, optional catalog summary, Watch/Watching action outside the navigation link. Search cards show loaded matching-book count, not total series size.
+- **WatchSeriesButton** - Reuses existing saved watches, confirmation and action. Confirmation warns that watching can request missing back-catalog books immediately. Watching still uses the existing instant-unwatch action.
+- **SearchResultsGrid** - Mixed series and normal audiobook cards. Groups only by valid exact `seriesAsin` with a series title. Missing identity remains a normal card. Grouped volumes do not repeat at the top level.
 
 **Requests**
 - **RequestCard** ✅ - Cover, title, author, status badge, progress bar, timestamps, action buttons (cancel, manual search, interactive search). When status=`awaiting_release` and `releaseDate` is set, shows "Releases &lt;Mon DD, YYYY&gt;" next to the status badge (UTC-formatted)
@@ -80,6 +85,20 @@ src/components/
 - Rounded-full design with backdrop blur and subtle shadow
 - Responsive grid layouts (1/2/3/4 cols)
 - Enhanced CTA section with gradient background (blue-to-indigo)
+
+**Search Page** (`/search?q=<query>`)
+- One search for books and series. URL query supports direct links and browser history.
+- Groups accumulated, explicitly loaded search pages by exact series ID. Same-title series with different IDs stay separate. No extra series catalog crawl.
+- A title or ASIN match shows `Matching book: <title>, Book <seriesPart>` and links to `/series/<seriesAsin>?q=<query>&match=<bookAsin>`. Missing volume metadata shows `volume unknown`. No volume is inferred from the title or result index.
+- Hide available filters only loaded book matches before grouping. Unknown availability stays visible. This does not establish availability of an entire series.
+- Counts distinguish visible series/cards from loaded book matches. Load more remains accessible when all loaded matches are hidden.
+- Legacy `/series` and `/series?q=<query>` redirect to the corresponding search URL. Existing `/series/<asin>` deep links remain valid.
+
+**Series Detail** (`/series/<asin>`)
+- Orders loaded books by known numeric volume position, including decimals. Unknown positions remain visible at the end in provider order. Explicit ranges keep their label and sort by the first position.
+- Highlights the exact matching book ASIN. One optional per-book lookup can show a match beyond the loaded page only when its metadata confirms the same exact series ID. Otherwise, the page reports that the match is not loaded and keeps manual pagination.
+- The matching book stays visible when Hide available is on. Return navigation restores `/search?q=<query>`.
+- Detail metadata exposes the provider's preferred series, not every membership. Unknown or conflicting membership is not guessed. No schema change.
 
 **Requests Page** (`/requests`)
 - Filter tabs: All, Active, Waiting, Completed, Failed, Cancelled
@@ -186,6 +205,8 @@ interface UnifiedPaginationProps {
 - **useAuth** - `{user, login, logout, isLoading}`
 - **useAudiobooks** - `{audiobooks, isLoading, error, totalPages, hasMore}`
 - **useAudiobookDetails** ✅ - `{audiobook, isLoading, error}` - Fetches individual audiobook by ASIN
+- **useSearch** - Explicitly paginated book matches with `seriesAsin`, `series`, `seriesPart` when the provider supplies them. `totalResults` is the provider book-match total, not a series count.
+- **useSeriesDetail** - Explicitly paginated series metadata and books. `seriesPart` comes from the provider's volume heading.
 - **useRequest** - `{createRequest, cancelRequest, isLoading}`
 
 ## Styling

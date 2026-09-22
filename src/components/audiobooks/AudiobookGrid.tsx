@@ -18,11 +18,13 @@ interface AudiobookGridProps {
   onRequestSuccess?: () => void;
   cardSize?: number; // 1-9, default 5
   squareCovers?: boolean; // true = square (1:1), false = rectangle (2:3)
+  highlightedAsin?: string;
+  showSeriesPosition?: boolean;
 }
 
 // Grid classes with generous spacing for premium feel
 // IMPORTANT: Classes must be explicit strings for Tailwind purging
-function getGridClasses(size: number): string {
+export function getAudiobookGridClasses(size: number): string {
   const sizeMap: Record<number, string> = {
     1: 'grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10',
     2: 'grid-cols-3 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9',
@@ -44,8 +46,10 @@ export function AudiobookGrid({
   onRequestSuccess,
   cardSize = 5,
   squareCovers = false,
+  highlightedAsin,
+  showSeriesPosition = false,
 }: AudiobookGridProps) {
-  const gridClasses = getGridClasses(cardSize);
+  const gridClasses = getAudiobookGridClasses(cardSize);
 
   if (isLoading) {
     return (
@@ -73,12 +77,23 @@ export function AudiobookGrid({
   return (
     <div className={`grid ${gridClasses} gap-5 sm:gap-6 lg:gap-8`}>
       {audiobooks.map((audiobook) => (
-        <AudiobookCard
+        <div
           key={audiobook.asin}
-          audiobook={audiobook}
-          onRequestSuccess={onRequestSuccess}
-          squareCovers={squareCovers}
-        />
+          id={`book-${audiobook.asin}`}
+          className={`min-w-0 scroll-mt-40 rounded-2xl ${audiobook.asin === highlightedAsin ? 'ring-2 ring-emerald-500 ring-offset-4 ring-offset-gray-50 dark:ring-offset-gray-900' : ''}`}
+        >
+          {(showSeriesPosition || audiobook.asin === highlightedAsin) && (
+            <p className="mb-2 text-sm font-medium text-emerald-700 dark:text-emerald-300">
+              {audiobook.asin === highlightedAsin && 'Matching book · '}
+              {audiobook.seriesPart ? `Book ${audiobook.seriesPart}` : 'Volume unknown'}
+            </p>
+          )}
+          <AudiobookCard
+            audiobook={audiobook}
+            onRequestSuccess={onRequestSuccess}
+            squareCovers={squareCovers}
+          />
+        </div>
       ))}
     </div>
   );

@@ -93,6 +93,8 @@
 - **Component catalog (cards, badges, forms)** → [frontend/components.md](frontend/components.md)
 - **RequestCard, StatusBadge, ProgressBar** → [frontend/components.md](frontend/components.md)
 - **Pages: home, search, requests, profile** → [frontend/components.md](frontend/components.md)
+- **Grouped book/series search, exact series IDs, Watch controls, matching-volume navigation** → [frontend/components.md](frontend/components.md)
+- **Search-only series identity preservation and real volume headings** → [integrations/audible.md](integrations/audible.md)
 - **Home page sections (per-user, configurable)** → [features/home-sections.md](features/home-sections.md)
 
 ## BookDate (AI Recommendations)
