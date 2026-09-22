@@ -23,6 +23,7 @@ const processorsMock = vi.hoisted(() => ({
   processCleanupSeededTorrents: vi.fn().mockResolvedValue('ok'),
   processSyncShelves: vi.fn().mockResolvedValue('ok'),
   processCheckWatchedLists: vi.fn().mockResolvedValue('ok'),
+  processReconcileIssueNotifications: vi.fn().mockResolvedValue('ok'),
   // Ebook processors
   processSearchEbook: vi.fn().mockResolvedValue('ok'),
   processStartDirectDownload: vi.fn().mockResolvedValue('ok'),
@@ -125,6 +126,10 @@ vi.mock('@/lib/processors/sync-shelves.processor', () => ({
 
 vi.mock('@/lib/processors/check-watched-lists.processor', () => ({
   processCheckWatchedLists: processorsMock.processCheckWatchedLists,
+}));
+
+vi.mock('@/lib/processors/reconcile-issue-notifications.processor', () => ({
+  processReconcileIssueNotifications: processorsMock.processReconcileIssueNotifications,
 }));
 
 // Ebook processors
@@ -590,6 +595,7 @@ describe('JobQueueService', () => {
     expect(processorsMock.processCleanupSeededTorrents).toHaveBeenCalled();
     expect(processorsMock.processSyncShelves).toHaveBeenCalled();
     expect(processorsMock.processCheckWatchedLists).toHaveBeenCalled();
+    expect(processorsMock.processReconcileIssueNotifications).toHaveBeenCalled();
   });
 
   it('returns repeatable jobs from the queue', async () => {
