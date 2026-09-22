@@ -87,6 +87,17 @@ describe('Header', () => {
       expect(screen.getByText('Change Password')).toBeInTheDocument();
     });
     expect(screen.getByText('Logout')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Report a problem' }));
+    expect(screen.getByRole('dialog', { name: 'Report a problem' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'General / not sure' })).toBeChecked();
+    expect(screen.getByLabelText('Book title (optional)')).toHaveValue('');
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'User menu' })).toHaveFocus();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Toggle menu' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Report a problem' }));
+    expect(screen.getByRole('dialog', { name: 'Report a problem' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Toggle menu' })).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('shows BookDate link and avatar when BookDate is enabled', async () => {

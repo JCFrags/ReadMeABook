@@ -21,7 +21,6 @@ const prismaMock = {
 };
 const queue = vi.hoisted(() => ({ addNotificationJob: vi.fn() }));
 vi.mock('@/lib/db', () => ({ prisma: prismaMock }));
-vi.mock('@/lib/utils/audiobook-matcher', () => ({ findPlexMatch: vi.fn().mockResolvedValue({ id: 'library-1' }) }));
 vi.mock('@/lib/services/job-queue.service', () => ({ getJobQueueService: () => queue }));
 
 const issue = {
@@ -118,6 +117,14 @@ describe('Pi-Notify activation and receipts', () => {
 
   it('retries the frozen event after failure without changing the source report', async () => {
     const { deliverIssueNotification } = await import('@/lib/services/notification/issue-notification-delivery');
+    const frozen = structuredClone(event);
+    delete frozen.data.kind;
+    delete frozen.data.ebookFormat;
+    delete frozen.data.submittedAsin;
+    delete frozen.data.target;
+    prismaMock.issueNotificationDelivery.findUnique.mockResolvedValue({
+      id: 'receipt-1', event: frozen, attempts: 0, acceptedAt: null, nextAttemptAt: new Date(0),
+    });
     const send = vi.fn().mockRejectedValueOnce(new PiNotifyTransportError('http_503')).mockResolvedValueOnce(undefined);
     expect(await deliverIssueNotification(backend.id, issue.id, send)).toBe('failed');
     expect(prismaMock.issueNotificationDelivery.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -127,6 +134,8 @@ describe('Pi-Notify activation and receipts', () => {
     prismaMock.notificationBackend.findUnique.mockResolvedValue({ ...backend, config: { applicationUrl: 'https://new.example.org' } });
     expect(await deliverIssueNotification(backend.id, issue.id, send)).toBe('accepted');
     expect(send.mock.calls[0][1].structuredEvent).toEqual(send.mock.calls[1][1].structuredEvent);
+    expect(send.mock.calls[1][1].structuredEvent).toEqual(frozen);
+    expect(send.mock.calls[1][1].structuredEvent.data).not.toHaveProperty('kind');
     expect(prismaMock.reportedIssue.update).not.toHaveBeenCalled();
     expect(prismaMock.issueNotificationDelivery.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({ data: { acceptedAt: expect.any(Date), lastError: null } }));
   });
@@ -163,14 +172,28 @@ describe('Pi-Notify activation and receipts', () => {
     }));
   });
 
-  it('returns the saved report when the existing Bull enqueue fails', async () => {
-    const { reportIssue } = await import('@/lib/services/reported-issue.service');
-    prismaMock.audiobook.findFirst.mockResolvedValue(issue.audiobook);
-    prismaMock.reportedIssue.findFirst.mockResolvedValue(null);
-    const saved = { ...issue, reporter: { plexUsername: 'Example User' } };
+  it('delivers a bookless general event and retains the existing delivery identity', async () => {
+    const { deliverIssueNotification } = await import('@/lib/services/notification/issue-notification-delivery');
+    const general = { ...issue, kind: 'general', audiobook: null };
+    const generalEvent = buildIssueEvent(backend.id, backend.config.applicationUrl, general);
+    expect(generalEvent.id).toBe(event.id);
+    expect(generalEvent.data).toMatchObject({ kind: 'general', book: null, target: null, ebookFormat: null });
+    expect(generalEvent.data.references.audiobookApiUrl).toBeNull();
+    prismaMock.reportedIssue.findUnique.mockResolvedValue(general);
+    prismaMock.issueNotificationDelivery.findUnique.mockResolvedValue({
+      id: 'receipt-1', event: generalEvent, attempts: 0, acceptedAt: null, nextAttemptAt: new Date(0),
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    expect(await deliverIssueNotification(backend.id, issue.id, send)).toBe('accepted');
+    expect(send).toHaveBeenCalledWith(backend.config, expect.objectContaining({ title: 'General report', author: 'Not specified', structuredEvent: generalEvent }));
+  });
+
+  it('returns a bookless saved report when the existing Bull enqueue fails', async () => {
+    const { createReportedIssue } = await import('@/lib/services/reported-issue.service');
+    const saved = { ...issue, kind: 'general', audiobook: null, reporter: { plexUsername: 'Example User' } };
     prismaMock.reportedIssue.create.mockResolvedValue(saved);
     queue.addNotificationJob.mockRejectedValue(new Error('synthetic Redis outage'));
-    expect(await reportIssue('ASIN1', 'user-1', issue.reason)).toEqual(saved);
-    expect(queue.addNotificationJob).toHaveBeenCalled();
+    expect(await createReportedIssue({ kind: 'general', reason: issue.reason }, 'user-1')).toMatchObject({ id: issue.id, book: null, canReplace: false });
+    expect(queue.addNotificationJob).toHaveBeenCalledWith('issue_reported', issue.id, 'General report', 'Not specified', 'Example User', issue.reason, 'general');
   });
 });

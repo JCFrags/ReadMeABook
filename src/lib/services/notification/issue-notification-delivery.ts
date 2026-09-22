@@ -69,7 +69,7 @@ export async function deliverIssueNotification(backendId: string, issueId: strin
 
     const event = receipt.event as unknown as PiNotifyIssueEvent;
     await send(current.config, {
-      event: 'issue_reported', issueId, title: event.data.book.title, author: event.data.book.author,
+      event: 'issue_reported', issueId, title: event.data.book?.title ?? 'General report', author: event.data.book?.author ?? 'Not specified',
       userName: '', message: event.data.report.text, timestamp: new Date(event.occurredAt), structuredEvent: event,
     });
     await prisma.issueNotificationDelivery.updateMany({

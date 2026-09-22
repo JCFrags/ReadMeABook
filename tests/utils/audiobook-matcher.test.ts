@@ -127,7 +127,8 @@ describe('audiobook-matcher', () => {
       },
     ]);
 
-    // Mock reported issues (none for this test)
+    // Mock reported issues and known siblings (none for this test).
+    prismaMock.workAsin.findMany.mockResolvedValue([]);
     prismaMock.reportedIssue.findMany.mockResolvedValue([]);
 
     const { enrichAudiobooksWithMatches } = await import('@/lib/utils/audiobook-matcher');

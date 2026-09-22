@@ -444,19 +444,19 @@ export function AudiobookDetailsModal({
                   )}
 
                   {/* Issue Reported Badge */}
-                  {isAvailable && hasReportedIssue && (
+                  {hasReportedIssue && (
                     <div className="mt-2 inline-flex">
                       <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" />
                         </svg>
-                        Issue Reported
+                        Audio issue reported
                       </span>
                     </div>
                   )}
 
-                  {/* Report Issue Button - inline with metadata, not in action bar */}
-                  {isAvailable && !hasReportedIssue && user && (
+                  {/* Keep reporting available for other formats and unresolved problems. */}
+                  {user && (
                     <div className="mt-2 inline-flex">
                       <button
                         onClick={() => setShowReportIssue(true)}
@@ -465,7 +465,7 @@ export function AudiobookDetailsModal({
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" />
                         </svg>
-                        Report Issue
+                        Report a problem
                       </button>
                     </div>
                   )}
@@ -863,10 +863,6 @@ export function AudiobookDetailsModal({
         <ReportIssueModal
           isOpen={showReportIssue}
           onClose={() => setShowReportIssue(false)}
-          onSuccess={() => {
-            setShowReportIssue(false);
-            showNotification('Issue reported!');
-          }}
           asin={asin}
           bookTitle={audiobook.title}
           bookAuthor={audiobook.author}

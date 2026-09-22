@@ -3,7 +3,7 @@
 **Status:** Implemented | Extensible notifications and opt-in structured issue delivery
 
 ## Overview
-Sends notifications for audiobook request events (pending approval, approved, available, error) to configured backends. Non-blocking, atomic per-backend failure handling. Proper notification timing for all request flows including interactive search.
+Sends request notifications and audiobook, ebook, or general issue reports to configured backends. Non-blocking, atomic per-backend failure handling. Proper notification timing for all request flows including interactive search.
 
 ## Key Details
 - **Backends:** Apprise (API), Discord (webhooks), ntfy (API), Pushover (API), Pi-Notify (structured issue events)
@@ -36,7 +36,7 @@ model NotificationBackend {
 | request_grabbed | Torrent/NZB added to download client | Download handed off to configured download client (title resolves by type) — **opt-in: existing backends do not auto-subscribe; enable in Settings** |
 | request_available | Plex/ABS scan or ebook download completes | Request available (title resolves by type) |
 | request_error | Download/import fails | Request failed at any stage |
-| issue_reported | User reports issue | User reports problem with available audiobook |
+| issue_reported | User reports issue | An audiobook, ebook, or general report is saved |
 
 **Dynamic Titles:** Events can define `titleByRequestType` in `notification-events.ts` for type-specific titles.
 - `request_grabbed` + `requestType: 'audiobook'` → "Audiobook Grabbed"
@@ -87,9 +87,9 @@ model NotificationBackend {
 - Includes error message in payload
 
 **Issue Reported (reported-issue.service.ts)**
-- After user reports issue with available audiobook → issue_reported
-- Payload: `issueId` (not a request foreign key), book title/author, reporter username, reason (as message).
-- Pi-Notify reloads the canonical source issue and book, freezes a structured event, and does not transmit the reporter username.
+- After an audiobook, ebook, or general report is saved → issue_reported.
+- Generic payload: `issueId` (not a request foreign key), title/author or bookless fallback text, reporter username, reason (as message), and report kind.
+- Pi-Notify reloads the canonical issue and optional book, freezes a structured event, and does not transmit the reporter username. See [reported issues](reported-issues.md) for target and repair boundaries.
 
 ## Configuration Encryption
 
@@ -117,7 +117,7 @@ model NotificationBackend {
 
 **Discord (Rich Embeds):**
 - Color-coded by event (yellow=pending, green=approved, blue=available, red=error, orange=issue)
-- Fields: Title, Author, Requested/Reported By, Error/Reason (if applicable)
+- Fields: Title, Author, Requested/Reported By, Error/Reason (if applicable). Report reasons split into fields of at most 1024 characters.
 - Footer: Request/Issue ID
 - Timestamp: Event time
 
@@ -133,6 +133,7 @@ model NotificationBackend {
 - Emojis: 📬 📬 🎉 ❌
 - Priority: Normal (0) for pending/approved, High (1) for available/error
 - Format: Event title + book details + user + error (if applicable)
+- Issue messages longer than 1024 characters include a truncation notice. The full report stays in RMAB.
 
 ## Pi-Notify structured provider
 
@@ -144,7 +145,7 @@ model NotificationBackend {
 - **Transport:** ten-second absolute timeout, 64 KiB event/response limit, no redirect following, no raw response/error-body logging.
 - **Identity:** `(source, id)` is the receiver idempotency key. Event ID is `issue-reported:<issue-id>:<backend-id>`. Each backend has a distinct delivery identity. Do not configure duplicate backends to the same repair subscription.
 - **Envelope:** `{schemaVersion: 1, id, source, type, subject: "reported-issue:<issue-id>", occurredAt, data}`. `occurredAt` is the report creation time, not the retry time.
-- **Data:** `issueId`, `statusAtPublication`, `book: {id, asin, title, author}`, `report: {text, trust: "untrusted-user-input"}`, and `references: {adminUrl, openIssuesApiUrl, audiobookApiUrl}`. Metadata/report text is untrusted data. No destination, Pi prompt, or repair authority is emitted.
+- **Data:** `issueId`, `statusAtPublication`, `kind`, `ebookFormat`, `submittedAsin`, nullable `target`, nullable `book: {id, asin, title, author}`, `report: {text, trust: "untrusted-user-input"}`, and `references: {adminUrl, openIssuesApiUrl, audiobookApiUrl}`. Context-only books can have a null ID. Frozen older events keep their original shape. See [reported issues](reported-issues.md) for the exact target contract. Metadata/report text is untrusted data. No destination, Pi prompt, or repair authority is emitted.
 - **Canonical references:** `/admin`, `/api/admin/reported-issues` plus the exact issue ID, and `/api/audiobooks/<asin>` when known. The receiver must use normal authenticated access and recheck the current issue before action.
 - **Recovery:** PostgreSQL `IssueNotificationDelivery` receipts plus `reconcile_issue_notifications` on the existing Bull queue. Backend `issueEventsEnabledAt` changes on enable/subscription activation, preventing automatic historical replay. See [reported issues](reported-issues.md) for bounds and retry behavior.
 - **Private deployment:** when RMAB uses bridge networking, container localhost is not the host loopback. Bind-mount only the protected Pi-Notify Unix socket directory into RMAB, retaining Bearer auth. Use a protected SSH local forward for a remote workstation receiver. Do not add public ingress or change RMAB to host networking solely for this connector.
@@ -203,7 +204,7 @@ model NotificationBackend {
   author: string,
   userName: string,
   message?: string,
-  requestType?: string, // 'audiobook' | 'ebook' — drives type-specific titles
+  requestType?: string, // 'audiobook' | 'ebook'; issue reports can also use 'general'
   timestamp: Date
 }
 ```

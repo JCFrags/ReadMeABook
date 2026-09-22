@@ -5,18 +5,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, AuthenticatedRequest } from '@/lib/middleware/auth';
-import { reportIssue, ReportedIssueError } from '@/lib/services/reported-issue.service';
+import { createReportedIssue, ReportIssueSchema, ReportedIssueError } from '@/lib/services/reported-issue.service';
 import { z } from 'zod';
 import { RMABLogger } from '@/lib/utils/logger';
 
 const logger = RMABLogger.create('API.ReportIssue');
 
-const ReportIssueSchema = z.object({
-  reason: z.string().min(1, 'Reason is required').max(250, 'Reason must be 250 characters or less'),
-  title: z.string().optional(),
-  author: z.string().optional(),
-  coverArtUrl: z.string().optional(),
-});
+// Do not silently convert an explicitly different format to an audiobook report.
+const LegacyReportSchema = z.object({ kind: z.literal('audiobook').optional() }).passthrough();
 
 /**
  * POST /api/audiobooks/[asin]/report-issue
@@ -36,10 +32,9 @@ export async function POST(
       }
 
       const { asin } = await params;
-      const body = await req.json();
-      const { reason, title, author, coverArtUrl } = ReportIssueSchema.parse(body);
-
-      const issue = await reportIssue(asin, req.user.id, reason, { title, author, coverArtUrl });
+      const body = LegacyReportSchema.parse(await req.json());
+      const input = ReportIssueSchema.parse({ ...body, kind: 'audiobook', asin });
+      const issue = await createReportedIssue(input, req.user.id);
 
       return NextResponse.json({ success: true, issue }, { status: 201 });
     } catch (error) {
@@ -48,6 +43,10 @@ export async function POST(
           { error: 'ValidationError', details: error.errors },
           { status: 400 }
         );
+      }
+
+      if (error instanceof SyntaxError) {
+        return NextResponse.json({ error: 'ValidationError', message: 'Invalid JSON body' }, { status: 400 });
       }
 
       if (error instanceof ReportedIssueError) {
