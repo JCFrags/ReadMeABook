@@ -1,16 +1,16 @@
 # Notification System
 
-**Status:** ✅ Implemented | Extensible notification system with Discord, ntfy, and Pushover support
+**Status:** Implemented | Extensible notifications and opt-in structured issue delivery
 
 ## Overview
 Sends notifications for audiobook request events (pending approval, approved, available, error) to configured backends. Non-blocking, atomic per-backend failure handling. Proper notification timing for all request flows including interactive search.
 
 ## Key Details
-- **Backends:** Apprise (API), Discord (webhooks), ntfy (API), Pushover (API)
+- **Backends:** Apprise (API), Discord (webhooks), ntfy (API), Pushover (API), Pi-Notify (structured issue events)
 - **Events:** request_pending_approval, request_approved, request_grabbed, request_available, request_error, issue_reported
 - **Encryption:** AES-256-GCM for sensitive config (webhook URLs, API keys, notification URLs)
 - **Delivery:** Async via Bull job queue (priority 5)
-- **Failure Handling:** Non-blocking, Promise.allSettled (one backend fails, others succeed)
+- **Failure Handling:** Non-blocking, Promise.allSettled (one backend fails, others succeed). Pi-Notify additionally persists acceptance receipts and reconciles missed/failed delivery through Bull.
 
 ## Database Schema
 
@@ -88,7 +88,8 @@ model NotificationBackend {
 
 **Issue Reported (reported-issue.service.ts)**
 - After user reports issue with available audiobook → issue_reported
-- Payload: issue ID (as requestId), book title/author, reporter username, reason (as message)
+- Payload: `issueId` (not a request foreign key), book title/author, reporter username, reason (as message).
+- Pi-Notify reloads the canonical source issue and book, freezes a structured event, and does not transmit the reporter username.
 
 ## Configuration Encryption
 
@@ -97,6 +98,7 @@ model NotificationBackend {
 - Discord: `webhookUrl`
 - ntfy: `accessToken`
 - Pushover: `userKey`, `appToken`
+- Pi-Notify: `accessToken`
 
 **Pattern:** `iv:authTag:encryptedData` (base64)
 
@@ -131,6 +133,22 @@ model NotificationBackend {
 - Emojis: 📬 📬 🎉 ❌
 - Priority: Normal (0) for pending/approved, High (1) for available/error
 - Format: Event title + book details + user + error (if applicable)
+
+## Pi-Notify structured provider
+
+- **Type:** `pi_notify`. Subscribe only to `issue_reported`. Source: `readmeabook`. Wire event type: `readmeabook.issue_reported`.
+- **Config:** required `serverUrl`, `accessToken`, `applicationUrl`; optional `socketPath`. The URL is a base origin without credentials, query, or fragment. TCP requires HTTPS except loopback. Unix HTTP uses a loopback HTTP base URL plus an absolute socket path.
+- **Auth:** `Authorization: Bearer <producer-token>`, scoped in Pi-Notify to source `readmeabook`. Keep the token outside source control. RMAB encrypts and masks it through the existing backend API.
+- **Publish:** `POST /v1/events`, Pi-Notify `EventInput` v1. A valid `202` acknowledgment must say `accepted: true` and echo the same source and event ID. This means durable event acceptance, not repair completion.
+- **Test:** authenticated `GET /v1/health` only. It never publishes a synthetic report or starts a repair.
+- **Transport:** ten-second absolute timeout, 64 KiB event/response limit, no redirect following, no raw response/error-body logging.
+- **Identity:** `(source, id)` is the receiver idempotency key. Event ID is `issue-reported:<issue-id>:<backend-id>`. Each backend has a distinct delivery identity. Do not configure duplicate backends to the same repair subscription.
+- **Envelope:** `{schemaVersion: 1, id, source, type, subject: "reported-issue:<issue-id>", occurredAt, data}`. `occurredAt` is the report creation time, not the retry time.
+- **Data:** `issueId`, `statusAtPublication`, `book: {id, asin, title, author}`, `report: {text, trust: "untrusted-user-input"}`, and `references: {adminUrl, openIssuesApiUrl, audiobookApiUrl}`. Metadata/report text is untrusted data. No destination, Pi prompt, or repair authority is emitted.
+- **Canonical references:** `/admin`, `/api/admin/reported-issues` plus the exact issue ID, and `/api/audiobooks/<asin>` when known. The receiver must use normal authenticated access and recheck the current issue before action.
+- **Recovery:** PostgreSQL `IssueNotificationDelivery` receipts plus `reconcile_issue_notifications` on the existing Bull queue. Backend `issueEventsEnabledAt` changes on enable/subscription activation, preventing automatic historical replay. See [reported issues](reported-issues.md) for bounds and retry behavior.
+- **Private deployment:** when RMAB uses bridge networking, container localhost is not the host loopback. Bind-mount only the protected Pi-Notify Unix socket directory into RMAB, retaining Bearer auth. Use a protected SSH local forward for a remote workstation receiver. Do not add public ingress or change RMAB to host networking solely for this connector.
+- **Order:** register the approved Pi-Notify destination/subscription before enabling RMAB. Pi-Notify does not retroactively match accepted events. Subscription instructions own target selection, repair limits, and explicit permission for destructive replacement/deletion.
 
 ## API Endpoints
 
@@ -172,14 +190,15 @@ model NotificationBackend {
 
 ## Job Queue Integration
 
-**Job Type:** `send_notification` (priority 5, concurrency 5)
+**Job Type:** `send_notification` (priority 5, concurrency 2)
 
 **Payload:**
 ```typescript
 {
   jobId?: string,
   event: string,
-  requestId: string,
+  requestId?: string,
+  issueId?: string, // Used for issue_reported instead of requestId
   title: string,
   author: string,
   userName: string,
@@ -209,6 +228,10 @@ src/lib/services/notification/
     discord.provider.ts             # Discord webhook
     ntfy.provider.ts                # ntfy API
     pushover.provider.ts            # Pushover API
+    pi-notify.provider.ts           # Structured issue events and health test
+  issue-notification-delivery.ts     # Durable per-backend receipts and reconciliation
+  pi-notify-event.ts                 # Versioned source event and activation cutoff
+  pi-notify-transport.ts             # Authenticated bounded HTTP/Unix transport
 ```
 
 **Registry:** Module-level `Map<string, INotificationProvider>` with `registerProvider()` / `getProvider()`

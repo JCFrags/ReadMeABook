@@ -25,6 +25,8 @@ Manages recurring/scheduled jobs providing automated tasks (Plex scans, Audible 
 7. **cleanup_seeded_torrents** - Default: every 30 mins, deletes torrents after seeding requirements met. Respects per-indexer `seedingTimeMinutes` AND `ratioLimit` (BOTH required when set; `0` disables that criterion; both `0` = never cleaned up). Undefined ratio with `ratioLimit > 0` = not met (safe-deny). Enabled by default.
 8. **monitor_rss_feeds** - Default: every 15 mins. Reads configured audiobook categories plus configured ebook categories only when ebook indexer search is enabled. Stores bounded hashed release identities and a publication high-water mark in Redis. The first feed establishes a baseline. Only newly observed entries newer than the previous mark can wake a cooling request once. Repeated entries and unknown publication dates do not bypass cooldown. Provider-error delays remain in force. Matches all `awaiting_search` requests in deterministic pages of 100, with blocklist, identity, and release-date guards. RSS never changes release-state transitions. Enabled by default.
 
+9. **reconcile_issue_notifications** - Default: every 5 minutes, enabled. No-op without an enabled Pi-Notify backend subscribed to `issue_reported`. Prepares at most 25 missing receipts and attempts at most 50 oldest-due deliveries per backend. Recovers missed enqueue/Redis loss without replaying historical or disabled-interval reports. Job results expose prepared/accepted/deferred/skipped/failed counts. Manual Trigger Now uses the same source status, activation cutoff, and retry eligibility checks. See [reported issues](reported-issues.md).
+
 ## Architecture: Bull + Cron
 
 - Repeatable jobs with cron expressions (Bull's built-in scheduler)

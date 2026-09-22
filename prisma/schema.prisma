@@ -508,6 +508,9 @@ model NotificationBackend {
   enabled   Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+  // Reset when Pi-Notify is enabled/subscribed. Prevents historical repair replay.
+  issueEventsEnabledAt DateTime? @map("issue_events_enabled_at")
+  issueDeliveries IssueNotificationDelivery[]
 
   @@index([enabled])
   @@map("notification_backends")
@@ -533,11 +536,34 @@ model ReportedIssue {
   audiobook  Audiobook @relation(fields: [audiobookId], references: [id], onDelete: Cascade)
   reporter   User      @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
   resolvedBy User?     @relation("Resolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  notificationDeliveries IssueNotificationDelivery[]
 
   @@index([audiobookId])
   @@index([reporterId])
   @@index([status])
   @@map("reported_issues")
+}
+
+// Durable acceptance receipts. Bull remains the worker and scheduler.
+model IssueNotificationDelivery {
+  id            String    @id @default(uuid())
+  issueId       String    @map("issue_id")
+  backendId     String    @map("backend_id")
+  event         Json      // Frozen Pi-Notify EventInput, reused on every retry
+  acceptedAt    DateTime? @map("accepted_at")
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime? @map("last_attempt_at")
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at")
+  lastError     String?   @map("last_error") @db.VarChar(100)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  issue   ReportedIssue       @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  backend NotificationBackend @relation(fields: [backendId], references: [id], onDelete: Cascade)
+
+  @@unique([issueId, backendId])
+  @@index([backendId, acceptedAt, nextAttemptAt])
+  @@map("issue_notification_deliveries")
 }
 
 // ============================================================================

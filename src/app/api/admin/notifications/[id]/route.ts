@@ -10,6 +10,7 @@ import { getNotificationService } from '@/lib/services/notification';
 import { NOTIFICATION_EVENT_KEYS } from '@/lib/constants/notification-events';
 import { RMABLogger } from '@/lib/utils/logger';
 import { z } from 'zod';
+import { issueEventsEnabledAt } from '@/lib/services/notification/pi-notify-event';
 
 const logger = RMABLogger.create('API.Admin.Notifications.Id');
 
@@ -124,6 +125,11 @@ export async function PUT(
         if (updates.config) updateData.config = finalConfig;
         if (updates.events) updateData.events = updates.events;
         if (updates.enabled !== undefined) updateData.enabled = updates.enabled;
+        if (existing.type === 'pi_notify') {
+          updateData.issueEventsEnabledAt = issueEventsEnabledAt(
+            existing.type, updates.enabled ?? existing.enabled, updates.events ?? existing.events, existing
+          );
+        }
 
         const updated = await prisma.notificationBackend.update({
           where: { id },

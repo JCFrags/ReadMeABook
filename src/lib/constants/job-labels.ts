@@ -23,4 +23,5 @@ export const JOB_TYPE_LABELS: Record<string, string> = {
   find_missing_ebooks: 'Find Missing Ebooks',
   sync_reading_shelves: 'Sync Reading Shelves',
   check_watched_lists: 'Check Watched Lists',
+  reconcile_issue_notifications: 'Reconcile Issue Notifications',
 };

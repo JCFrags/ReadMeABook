@@ -20,6 +20,8 @@ export interface NotificationPayload {
   message?: string; // For error/issue events
   requestType?: string; // 'audiobook' | 'ebook' — drives type-specific titles via getEventTitle()
   timestamp: Date;
+  test?: boolean; // Connectivity only. Pi-Notify tests never publish a report.
+  structuredEvent?: import('./pi-notify-event').PiNotifyIssueEvent;
 }
 
 // Provider config field definition for dynamic UI rendering

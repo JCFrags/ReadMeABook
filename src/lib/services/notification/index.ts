@@ -38,9 +38,11 @@ export type { AppriseConfig } from './providers/apprise.provider';
 export type { DiscordConfig } from './providers/discord.provider';
 export type { NtfyConfig } from './providers/ntfy.provider';
 export type { PushoverConfig } from './providers/pushover.provider';
+export type { PiNotifyConfig } from './providers/pi-notify.provider';
 
 // Provider classes
 export { AppriseProvider } from './providers/apprise.provider';
 export { DiscordProvider } from './providers/discord.provider';
 export { NtfyProvider } from './providers/ntfy.provider';
 export { PushoverProvider } from './providers/pushover.provider';
+export { PiNotifyProvider } from './providers/pi-notify.provider';

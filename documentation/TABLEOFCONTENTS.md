@@ -85,9 +85,10 @@
 - **Job-aware database persistence** → [backend/services/logging.md](backend/services/logging.md)
 
 ## Notifications
-- **Notification backends (Discord, Pushover)** → [backend/services/notifications.md](backend/services/notifications.md)
+- **Notification backends and structured Pi-Notify connector** → [backend/services/notifications.md](backend/services/notifications.md)
 - **Event types, triggers, message formatting** → [backend/services/notifications.md](backend/services/notifications.md)
 - **Notification settings UI** → [settings-pages.md](settings-pages.md)
+- **Reported issues, Pi-Notify receipts, retry/reconciliation, and repair boundaries** → [backend/services/reported-issues.md](backend/services/reported-issues.md)
 
 ## Frontend Components
 - **Component catalog (cards, badges, forms)** → [frontend/components.md](frontend/components.md)

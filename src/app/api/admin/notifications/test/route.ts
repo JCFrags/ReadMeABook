@@ -70,6 +70,7 @@ export async function POST(request: NextRequest) {
           userName: 'Test User',
           requestType: 'audiobook',
           timestamp: new Date(),
+          ...(type === 'pi_notify' ? { test: true } : {}),
         };
 
         // Send test notification synchronously (not via job queue)
