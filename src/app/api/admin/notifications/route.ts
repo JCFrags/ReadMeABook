@@ -10,6 +10,7 @@ import { getNotificationService, getRegisteredProviderTypes } from '@/lib/servic
 import { NOTIFICATION_EVENT_KEYS } from '@/lib/constants/notification-events';
 import { RMABLogger } from '@/lib/utils/logger';
 import { z } from 'zod';
+import { issueEventsEnabledAt } from '@/lib/services/notification/pi-notify-event';
 
 const logger = RMABLogger.create('API.Admin.Notifications');
 
@@ -86,6 +87,7 @@ export async function POST(request: NextRequest) {
             config: encryptedConfig,
             events,
             enabled,
+            ...(type === 'pi_notify' ? { issueEventsEnabledAt: issueEventsEnabledAt(type, enabled, events) } : {}),
           },
         });
 

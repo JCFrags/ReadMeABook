@@ -34,6 +34,7 @@ export type JobType =
   | 'sync_reading_shelves'
   | 'check_watched_lists'
   | 'send_notification'
+  | 'reconcile_issue_notifications'
   // Ebook-specific job types
   | 'search_ebook'
   | 'start_direct_download'
@@ -417,6 +418,12 @@ export class JobQueueService {
       const { processCheckWatchedLists } = await import('../processors/check-watched-lists.processor');
       const payloadWithJobId = await this.ensureJobRecord(job, 'check_watched_lists');
       return await processCheckWatchedLists(payloadWithJobId);
+    });
+
+    this.queue.process('reconcile_issue_notifications', 1, async (job: BullJob<JobPayload>) => {
+      const { processReconcileIssueNotifications } = await import('../processors/reconcile-issue-notifications.processor');
+      const payload = await this.ensureJobRecord(job, 'reconcile_issue_notifications');
+      return await processReconcileIssueNotifications(payload);
     });
 
     // Send notification processor
@@ -1071,6 +1078,11 @@ export class JobQueueService {
   async close(): Promise<void> {
     await this.queue.close();
     this.redis.disconnect();
+  }
+
+  /** Reconcile durable issue receipts using the same queue as other scheduled jobs. */
+  async addIssueNotificationReconciliationJob(scheduledJobId?: string): Promise<string> {
+    return this.addJob('reconcile_issue_notifications', { scheduledJobId }, { priority: 5 });
   }
 
   /**

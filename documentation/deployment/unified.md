@@ -16,7 +16,7 @@ All-in-one Docker image for simple deployment. PostgreSQL + Redis + App in singl
 - Next.js app (exposed, 0.0.0.0:3030)
 - Supervisord manages all processes
 
-**Image:** `ghcr.io/kikootwo/readmeabook:latest`
+**Fork image:** `ghcr.io/jcfrags/readmeabook` at an accepted commit's published digest. [FORK.md](../../FORK.md) owns build, activation, and rollback requirements. Do not replace an installed fork database with an unreviewed upstream image.
 
 **Auto-generated secrets (persisted to `/app/config/.secrets`):**
 - `JWT_SECRET` - Random 32-byte base64
@@ -85,7 +85,7 @@ All-in-one Docker image for simple deployment. PostgreSQL + Redis + App in singl
 ```yaml
 services:
   readmeabook:
-    image: ghcr.io/kikootwo/readmeabook:latest
+    image: ghcr.io/jcfrags/readmeabook:latest # Pin the reviewed digest for activation.
     ports:
       - "3030:3030"
     volumes:
@@ -147,8 +147,10 @@ docker run -d \
   -v ./media:/media \
   -v ./pgdata:/var/lib/postgresql/data \
   -v ./redis:/var/lib/redis \
-  ghcr.io/kikootwo/readmeabook:latest
+  ghcr.io/jcfrags/readmeabook:latest
 ```
+
+For activation, use the reviewed digest instead of the mutable example tag.
 
 ## Environment Variables
 
@@ -214,7 +216,7 @@ PostgreSQL requires that the database cluster owner have a specific username ("p
 ```yaml
 services:
   readmeabook:
-    image: ghcr.io/kikootwo/readmeabook:latest
+    image: ghcr.io/jcfrags/readmeabook:latest # Pin the reviewed digest for activation.
     environment:
       PUID: 1000  # Your user ID
       PGID: 1000  # Your group ID
@@ -331,21 +333,21 @@ This works fine for most deployments, but files will have different owners on th
 **File:** `.github/workflows/build-unified-image.yml`
 
 **Triggers:**
-- Push to `main` branch
-- Tags matching `v*`
-- Manual workflow dispatch
-- Pull requests (build only, no push)
+- Tags matching `v*` (publish after tests)
+- Manual workflow dispatch (publish after tests)
+- Pull requests to `main` (full tests and image build, no publication)
+- An ordinary push to `main` does not publish an image.
 
 **Platforms:**
-- linux/amd64
-- linux/arm64
+- linux/amd64 only. The unified Dockerfile currently installs an amd64 ffmpeg binary.
 
 **Tags:**
-- `latest` (main branch)
+- `latest` (publication from the default branch)
 - `v1.2.3` (version tags)
 - `v1.2` (minor version)
 - `v1` (major version)
-- `main-<sha>` (commit SHA)
+- `sha-<short-sha>` (commit SHA)
+- Branch name for a manual branch publication
 
 **Registry:** GitHub Container Registry (ghcr.io)
 

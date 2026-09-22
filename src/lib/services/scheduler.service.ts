@@ -22,7 +22,7 @@ const STALE_NAME_REWRITES: ReadonlyArray<{
   { type: 'plex_recently_added_check', staleName: 'Plex Recently Added Check', neutralName: 'Recently Added Check' },
 ];
 
-export type ScheduledJobType = 'plex_library_scan' | 'plex_recently_added_check' | 'audible_refresh' | 'retry_missing_torrents' | 'retry_failed_imports' | 'find_missing_ebooks' | 'cleanup_seeded_torrents' | 'monitor_rss_feeds' | 'sync_reading_shelves' | 'check_watched_lists';
+export type ScheduledJobType = 'plex_library_scan' | 'plex_recently_added_check' | 'audible_refresh' | 'retry_missing_torrents' | 'retry_failed_imports' | 'find_missing_ebooks' | 'cleanup_seeded_torrents' | 'monitor_rss_feeds' | 'sync_reading_shelves' | 'check_watched_lists' | 'reconcile_issue_notifications';
 
 export interface ScheduledJob {
   id: string;
@@ -95,6 +95,13 @@ export class SchedulerService {
    */
   private async ensureDefaultJobs(): Promise<void> {
     const defaults = [
+      {
+        name: 'Reconcile Issue Notifications',
+        type: 'reconcile_issue_notifications' as ScheduledJobType,
+        schedule: '*/5 * * * *',
+        enabled: true, // No-op until a Pi-Notify backend is explicitly enabled/subscribed.
+        payload: {},
+      },
       {
         name: 'Library Scan',
         type: 'plex_library_scan' as ScheduledJobType,
@@ -438,6 +445,9 @@ export class SchedulerService {
         break;
       case 'check_watched_lists':
         bullJobId = await this.triggerCheckWatchedLists(job);
+        break;
+      case 'reconcile_issue_notifications':
+        bullJobId = await this.jobQueue.addIssueNotificationReconciliationJob(job.id);
         break;
       default:
         throw new Error(`Unknown job type: ${job.type}`);

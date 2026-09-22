@@ -7,11 +7,13 @@ This is not an official upstream release. The original [AGPL-3.0 license](LICENS
 ## Scope
 
 - Separate bounded discovery queries from the requested book's matching identity.
+- Group catalog search by exact series ID, retain standalone books, and show matching-volume navigation with the existing Watch confirmation. Existing watch and download policies remain unchanged.
 - Delay confirmed no-match searches for 1, 3, 7, then 14 days. Keep provider failures distinct and prevent duplicate pending or active searches.
 - Use configured RSS categories and bounded release-identity tracking.
 - Preserve validated, already-downloaded EPUB/PDF files without enabling another acquisition source.
 - Return confirmed ebook-only audio downloads to a delayed search state after blocking the bad release. Preserve their source files.
 - Select explicit files from a collection, track one request per book, and preserve collection sources for later volumes.
+- Publish opt-in structured Report Issue events to Pi-Notify through an authenticated provider, durable receipts, and bounded Bull reconciliation. The receiver subscription owns the repair target and approved instructions. Reporting and event acceptance do not authorize deletion or replacement. See [reported issues](documentation/backend/services/reported-issues.md).
 
 Matching metadata is not proof of a complete or correct edition. Unknown or conflicting identity can require manual review. Existing watched-series controls can request missing back-catalog books immediately. A watch is not a next-volume-only policy.
 

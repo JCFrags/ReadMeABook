@@ -553,7 +553,8 @@ describe('NotificationService', () => {
       expect(types).toContain('discord');
       expect(types).toContain('ntfy');
       expect(types).toContain('pushover');
-      expect(types).toHaveLength(4);
+      expect(types).toContain('pi_notify');
+      expect(types).toHaveLength(5);
     });
   });
 
@@ -562,7 +563,7 @@ describe('NotificationService', () => {
       const { getAllProviderMetadata } = await import('@/lib/services/notification');
       const metadata = getAllProviderMetadata();
 
-      expect(metadata).toHaveLength(4);
+      expect(metadata).toHaveLength(5);
 
       const apprise = metadata.find((m) => m.type === 'apprise');
       expect(apprise).toBeDefined();

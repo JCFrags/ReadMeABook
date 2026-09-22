@@ -34,6 +34,7 @@ Manages background job queue using Bull (Redis-backed) for async tasks: searchin
 4. **scan_plex** - Full scan of library, match all non-terminal requests (excludes: available, cancelled)
 5. **plex_recently_added_check** - Lightweight polling of recently added items, match all non-terminal requests
 6. **match_plex** - Fuzzy match to Plex item (deprecated - now handled by scan_plex)
+7. **reconcile_issue_notifications** - Recover missing/failed Pi-Notify issue events from PostgreSQL receipts. Existing Bull worker, concurrency 1. No report resolution or media changes. See [reported issues](reported-issues.md).
 
 ## Download Grab Fallback
 

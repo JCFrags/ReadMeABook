@@ -2,9 +2,7 @@
  * Component: Series Card
  * Documentation: documentation/frontend/components.md
  *
- * Premium "Cover First" design - metadata integrated into the cover overlay.
- * Rating badge top-left, book count top-right, tags in bottom gradient overlay.
- * Only the title lives below the cover, ensuring consistent row heights in the grid.
+ * Series summary with an independent watch action and optional search match.
  */
 
 'use client';
@@ -13,21 +11,27 @@ import React, { useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { SeriesSummary } from '@/lib/hooks/useSeries';
+import type { Audiobook } from '@/lib/hooks/useAudiobooks';
+import { WatchSeriesButton } from '@/components/ui/WatchButton';
 
 interface SeriesCardProps {
   series: SeriesSummary;
   squareCovers?: boolean;
+  href?: string;
+  matchingBook?: Pick<Audiobook, 'asin' | 'title' | 'seriesPart'>;
+  matchingBookCount?: number;
 }
 
-export function SeriesCard({ series, squareCovers = false }: SeriesCardProps) {
+export function SeriesCard({ series, squareCovers = false, href, matchingBook, matchingBookCount }: SeriesCardProps) {
   const [coverError, setCoverError] = useState(false);
   const visibleTags = series.tags.slice(0, 2);
   const hasTags = visibleTags.length > 0;
   const hasRating = series.rating != null && series.rating > 0;
 
   return (
+    <article className="min-w-0 space-y-3" data-series-asin={series.asin}>
     <Link
-      href={`/series/${series.asin}`}
+      href={href || `/series/${series.asin}`}
       className="group outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent rounded-2xl block"
       aria-label={`View ${series.title} series`}
     >
@@ -130,8 +134,8 @@ export function SeriesCard({ series, squareCovers = false }: SeriesCardProps) {
         )}
       </div>
 
-      {/* Below-cover: title only — fixed, predictable height across all cards */}
-      <div className="mt-2.5 px-0.5">
+      <div className="mt-2.5 px-0.5 space-y-1">
+        <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">Series</p>
         <h3 className="
           font-semibold text-[14px] leading-snug
           text-gray-900 dark:text-gray-100
@@ -141,7 +145,24 @@ export function SeriesCard({ series, squareCovers = false }: SeriesCardProps) {
         ">
           {series.title}
         </h3>
+        {matchingBookCount !== undefined && (
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {matchingBookCount} matching book{matchingBookCount === 1 ? '' : 's'} loaded
+          </p>
+        )}
+        {matchingBook && (
+          <p className="text-sm text-emerald-700 dark:text-emerald-300">
+            Matching book: {matchingBook.title}{matchingBook.seriesPart ? `, Book ${matchingBook.seriesPart}` : ', volume unknown'}
+          </p>
+        )}
       </div>
     </Link>
+    <WatchSeriesButton
+      seriesAsin={series.asin}
+      seriesTitle={series.title}
+      coverArtUrl={series.coverArtUrl}
+      compact
+    />
+    </article>
   );
 }

@@ -11,6 +11,8 @@ import { AppriseProvider } from './providers/apprise.provider';
 import { DiscordProvider } from './providers/discord.provider';
 import { NtfyProvider } from './providers/ntfy.provider';
 import { PushoverProvider } from './providers/pushover.provider';
+import { PiNotifyProvider } from './providers/pi-notify.provider';
+import { deliverIssueNotification } from './issue-notification-delivery';
 
 const logger = RMABLogger.create('NotificationService');
 
@@ -30,6 +32,7 @@ registerProvider(new AppriseProvider());
 registerProvider(new DiscordProvider());
 registerProvider(new NtfyProvider());
 registerProvider(new PushoverProvider());
+registerProvider(new PiNotifyProvider());
 
 export function getRegisteredProviderTypes(): string[] {
   return Array.from(providers.keys());
@@ -69,9 +72,16 @@ export class NotificationService {
 
       // Send to all backends in parallel (atomic per-backend)
       const results = await Promise.allSettled(
-        backends.map((backend) =>
-          this.sendToBackend(backend.type, backend.config, payload)
-        )
+        backends.map((backend) => {
+          if (backend.type === 'pi_notify') {
+            if (payload.event !== 'issue_reported' || !payload.issueId) return Promise.resolve();
+            return deliverIssueNotification(backend.id, payload.issueId,
+              (config, event) => this.sendToBackend('pi_notify', config, event)).then((result) => {
+                if (result === 'failed') throw new Error('Pi-Notify issue delivery failed; retry scheduled');
+              });
+          }
+          return this.sendToBackend(backend.type, backend.config, payload);
+        })
       );
 
       // Log results

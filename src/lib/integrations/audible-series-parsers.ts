@@ -92,6 +92,11 @@ function outsideCarousel($: cheerio.CheerioAPI, selector: string) {
 // Book list parsing
 // ---------------------------------------------------------------------------
 
+/** Read only an explicit volume heading, never a title or the row's list index. */
+function parseSeriesPosition(heading: string): string | undefined {
+  return heading.trim().match(/^(?:books?|buch|bücher|band|teil|libros?|livres?|tome|volume)\s+(\d+(?:\.\d+)?(?:\s*[-–—,&]\s*\d+(?:\.\d+)?)*)$/i)?.[1];
+}
+
 /**
  * Parse all books from a series page, preferring the modern layout.
  * Falls back to the legacy product-list markup when no modern rows exist.
@@ -173,6 +178,7 @@ function parseModernSeriesBooks(
       durationMinutes: meta?.duration ? parseRuntime(meta.duration, langConfig) : undefined,
       releaseDate: meta?.releaseDate || undefined,
       language: meta?.language || undefined,
+      seriesPart: parseSeriesPosition($el.attr('series-header') || ''),
     });
   });
 
@@ -246,6 +252,7 @@ function parseLegacySeriesBooks(
       coverArtUrl,
       rating,
       durationMinutes,
+      seriesPart: parseSeriesPosition($el.find('h2').first().text()),
     });
   });
 

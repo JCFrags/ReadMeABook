@@ -132,6 +132,7 @@ Roughly 40% of requests return the **modern** layout, the rest **legacy**. The s
 | Field | Modern | Legacy |
 |-------|--------|--------|
 | Books | `<adbl-product-row>` inside `#series-titles` | `<li class="productListItem">` / `.bc-list-item` |
+| Volume (`seriesPart`) | Explicit `series-header="Book 4"` attribute | Explicit `h2` book heading |
 | Book metadata | `<script type="application/json">` per row: `{authors[{name,url}], narrators[{name}], duration, language, releaseDate, rating{value,count}}` | scraped from `.authorLabel` / `searchNarrator=` anchors / `.runtimeLabel` / `.ratingsLabel` |
 | Book count | `<span slot="child">4 books in series</span>` | `"4 books"` span text |
 | Series rating | `<adbl-star-rating slot="rating" value count>` | `div.bc-review-stars[aria-label]` + `span.series-rating` |
@@ -141,7 +142,7 @@ Roughly 40% of requests return the **modern** layout, the rest **legacy**. The s
 
 **Critical:** carousel content describes *other* series. `outsideCarousel()` excludes `adbl-product-carousel` descendants from book-count, rating, cover and row selection — the "Listeners also enjoyed" carousel carries its own `slot="child-count"` values.
 
-Modern rows yield strictly richer data (`releaseDate`, `language`, real narrator arrays, author ASIN). `parseSeriesBooks()` returns legacy results only when zero modern rows parse.
+Modern rows yield strictly richer data (`releaseDate`, `language`, real narrator arrays, author ASIN). `parseSeriesBooks()` returns legacy results only when zero modern rows parse. Volume positions come only from explicit headings. Missing or unrecognized headings remain unknown, never row-index or title guesses.
 
 `scrapeSeriesPage()` logs a warning when the header reports books but zero rows parse — that signals Audible changed its markup again.
 
@@ -199,7 +200,9 @@ Discovery views (search, author books, series detail) collapse duplicate Audible
 - `src/app/api/authors/[asin]/books/route.ts`
 - `src/app/api/series/[asin]/route.ts`
 
-Watched-list background jobs (`watched-lists.service.ts`) run the local pass only — they don't render a view, and the downstream `request-creator.service.ts` already does sibling-aware dedup at request creation time.
+**Search-only series identity guard:** `/api/audiobooks/search` partitions the current provider page by exact `seriesAsin` before both dedup passes. Entries without an ID use a separate partition. This prevents title/narrator matches or existing Work links from removing an alternate series identity before grouped search renders it. The route keeps provider order and reports the provider's `totalResults`, not the current deduped page length. Series-card grouping uses only loaded pages and the preferred series already exposed by the catalog mapper.
+
+Watched-list background jobs (`watched-lists.service.ts`) run the local pass only — they don't render a view, and the downstream `request-creator.service.ts` already does sibling-aware dedup at request creation time. The search-only guard does not change those jobs, acquisition matching, or saved watches.
 
 ## Database-First Approach
 

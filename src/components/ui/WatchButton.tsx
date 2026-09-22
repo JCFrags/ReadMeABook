@@ -1,6 +1,6 @@
 /**
  * Component: Watch Button (Series / Author)
- * Documentation: documentation/features/watched-lists.md
+ * Documentation: documentation/frontend/components.md
  *
  * Reusable toggle button for watching/unwatching a series or author.
  * Shows a confirmation modal before watching. Unwatching is instant.
@@ -17,9 +17,10 @@ interface WatchSeriesButtonProps {
   seriesAsin: string;
   seriesTitle: string;
   coverArtUrl?: string;
+  compact?: boolean;
 }
 
-export function WatchSeriesButton({ seriesAsin, seriesTitle, coverArtUrl }: WatchSeriesButtonProps) {
+export function WatchSeriesButton({ seriesAsin, seriesTitle, coverArtUrl, compact = false }: WatchSeriesButtonProps) {
   const { series } = useWatchedSeries();
   const { addSeries, isLoading: isAdding } = useAddWatchedSeries();
   const { deleteSeries, isLoading: isDeleting } = useDeleteWatchedSeries();
@@ -81,7 +82,7 @@ export function WatchSeriesButton({ seriesAsin, seriesTitle, coverArtUrl }: Watc
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
           </svg>
         )}
-        {isWatching ? 'Watching' : 'Watch Series'}
+        {isWatching ? 'Watching' : compact ? 'Watch' : 'Watch Series'}
       </button>
       {error && (
         <span className="text-xs text-red-500 mt-1">{error}</span>
